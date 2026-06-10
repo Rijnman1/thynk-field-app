@@ -244,12 +244,11 @@ input[type=file]{display:none}
         <div class="errmsg">Reading is required</div>
       </div>
       <div class="field" id="fld-parent">
-        <label>Parent meter (zone) <span class="req">*</span></label>
+        <label>Parent meter (zone)</label>
         <select id="f-parent" onchange="chk(this)">
-          <option value="">Select parent meter...</option>
+          <option value="">Unknown — confirm later</option>
         </select>
-        <div class="hint">Which zone meter does this property report to?</div>
-        <div class="errmsg">Parent meter is required</div>
+        <div class="hint">Select if known. Leave blank and confirm in the office if unsure.</div>
       </div>
       <div class="field">
         <label>Unit / position name</label>
@@ -703,7 +702,7 @@ function validateStep(s) {
   let ok = true;
   const req = {
     0: [['f-tech', 'fld-tech']],
-    1: [['f-ns','fld-ns'],['f-parent','fld-parent']],
+    1: [['f-ns','fld-ns']],
     2: [], 3: [], 4: [],
   };
   (req[s] || []).forEach(([id, fld]) => {
@@ -991,7 +990,7 @@ function selectSite(id) {
 
   // Populate parent meter dropdown
   const pm = document.getElementById('f-parent');
-  pm.innerHTML = '<option value="">Select parent meter...</option>';
+  pm.innerHTML = '<option value="">Unknown — confirm later</option>';
   (site.pms || []).forEach(p => {
     const o = document.createElement('option');
     o.value = p.serial;
@@ -1162,7 +1161,7 @@ Longitude:   ${job.lon || 'NOT CAPTURED — REQUIRED'}
 NEW METER
 Serial No:   ${job.newSerial}
 Opening Reading: ${job.newReading}
-Parent Meter:${job.parent}
+Parent Meter: ${job.parent || 'UNKNOWN — CONFIRM IN OFFICE'}
 
 OLD METER
 Serial No:   ${job.oldSerial || 'N/A'}
@@ -1190,7 +1189,7 @@ New Serial No:    ${job.newSerial}
 New Reading:      ${job.newReading}
 Old Serial No:    ${job.oldSerial || 'N/A'}
 Old Reading:      ${job.oldReading || 'N/A'}
-Parent Meter:     ${job.parent}
+Parent Meter:     ${job.parent || 'UNKNOWN — CONFIRM IN OFFICE'}
 Latitude:         ${job.lat || 'ESTIMATED'}
 Longitude:        ${job.lon || 'ESTIMATED'}
 Phase:            ${job.phase || ''}
@@ -1314,7 +1313,7 @@ function resetForm() {
   });
   document.getElementById('f-date').value = today();
   document.getElementById('f-alloc').value = 'PENDING SURVEY';
-  document.getElementById('f-parent').innerHTML = '<option value="">Select parent meter...</option>';
+  document.getElementById('f-parent').innerHTML = '<option value="">Unknown — confirm later</option>';
   const saved = ls('thynk-tech');
   if (saved) document.getElementById('f-tech').value = saved;
 
