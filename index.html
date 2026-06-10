@@ -1,0 +1,1351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Thynk H2O Field App</title>
+<style>
+:root {
+  --navy:#0D2137; --teal:#1B6B8A; --teal-lt:#D0E8F0;
+  --green:#27AE60; --green-lt:#D5F5E3;
+  --amber:#E67E22; --amber-lt:#FDEBD0;
+  --red:#C0392B; --red-lt:#FADADD;
+  --grey:#F2F5F7; --mgrey:#BDC3C7; --dkgrey:#5D6D7E;
+  --white:#FFFFFF; --black:#1A1A1A;
+  --r:10px; --rs:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--grey);color:var(--black);min-height:100vh;padding-bottom:70px}
+.topbar{background:var(--navy);color:#fff;padding:12px 16px;position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.topbar-logo{font-size:17px;font-weight:700}.topbar-logo span{color:var(--teal-lt)}
+.topbar-right{display:flex;align-items:center;gap:10px}
+.online-dot{width:8px;height:8px;border-radius:50%;background:var(--mgrey)}
+.online-dot.on{background:var(--green)}.online-dot.off{background:var(--amber)}
+.status-txt{font-size:11px;color:rgba(255,255,255,.7)}
+.tab-bar{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--mgrey);display:flex;z-index:150}
+.tab{flex:1;padding:10px 0 12px;text-align:center;cursor:pointer;color:var(--dkgrey);font-size:10px;font-weight:600;letter-spacing:.3px;transition:color .2s}
+.tab.active{color:var(--teal)}
+.tab-icon{font-size:20px;display:block;margin-bottom:3px}
+.badge{background:var(--amber);color:#fff;font-size:9px;font-weight:700;border-radius:8px;padding:1px 5px;position:relative;top:-8px;left:-3px;display:none}
+.view{display:none;padding:16px;padding-bottom:80px}
+.view.active{display:block}
+.section-label{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--teal);text-transform:uppercase;margin:20px 0 10px}
+.section-label:first-child{margin-top:0}
+.card{background:#fff;border-radius:var(--r);padding:15px;margin-bottom:12px;box-shadow:0 2px 8px rgba(13,33,55,.08)}
+.card-head{font-size:13px;font-weight:700;color:var(--navy);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.tag{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600}
+.tag-red{background:var(--red-lt);color:var(--red)}
+.tag-amber{background:var(--amber-lt);color:var(--amber)}
+.tag-green{background:var(--green-lt);color:var(--green)}
+.tag-teal{background:var(--teal-lt);color:var(--teal)}
+.field{margin-bottom:12px}
+.field:last-child{margin-bottom:0}
+.field label{display:block;font-size:11px;font-weight:700;color:var(--dkgrey);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
+.field .req{color:var(--red);margin-left:2px}
+.field input,.field select,.field textarea{width:100%;padding:10px 12px;border:2px solid var(--mgrey);border-radius:var(--rs);font-size:15px;font-family:inherit;background:#fff;color:var(--black);transition:border-color .2s;-webkit-appearance:none}
+.field input:focus,.field select:focus,.field textarea:focus{outline:none;border-color:var(--teal)}
+.field input.ok,.field select.ok{border-color:var(--green)}
+.field input.err,.field select.err{border-color:var(--red);background:var(--red-lt)}
+.field .hint{font-size:11px;color:var(--dkgrey);margin-top:3px}
+.field .errmsg{font-size:11px;color:var(--red);margin-top:3px;display:none}
+.field.showerr .errmsg{display:block}
+.field textarea{height:72px;resize:vertical}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-row{display:flex;gap:10px;margin-top:4px}
+.btn{padding:12px;border:none;border-radius:var(--rs);font-size:14px;font-weight:700;cursor:pointer;flex:1;transition:opacity .2s}
+.btn:active{opacity:.8}
+.btn-primary{background:var(--teal);color:#fff}
+.btn-secondary{background:var(--grey);color:var(--navy)}
+.btn-success{background:var(--green);color:#fff}
+.btn-danger{background:var(--red);color:#fff}
+.btn-sm{padding:8px 14px;font-size:13px;flex:none}
+.btn:disabled{opacity:.35;pointer-events:none}
+.toggle-grid{display:grid;gap:8px}
+.toggle-grid-2{grid-template-columns:1fr 1fr}
+.toggle-grid-3{grid-template-columns:1fr 1fr 1fr}
+.toggle-opt{border:2px solid var(--mgrey);border-radius:var(--rs);padding:10px 8px;text-align:center;cursor:pointer;background:#fff;transition:all .2s}
+.toggle-opt .t-icon{font-size:22px;display:block;margin-bottom:3px}
+.toggle-opt .t-lbl{font-size:12px;font-weight:600;color:var(--dkgrey)}
+.toggle-opt .t-sub{font-size:10px;color:var(--mgrey);margin-top:2px}
+.toggle-opt.sel{border-color:var(--teal);background:var(--teal-lt)}
+.toggle-opt.sel .t-lbl{color:var(--teal)}
+.photo-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.photo-slot{border:2px dashed var(--mgrey);border-radius:var(--rs);aspect-ratio:4/3;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;overflow:hidden;position:relative;background:var(--grey);transition:border-color .2s}
+.photo-slot.has-photo{border-style:solid;border-color:var(--green)}
+.photo-slot.need-photo{border-color:var(--red)}
+.photo-slot img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+.photo-slot-lbl{font-size:10px;font-weight:600;color:var(--dkgrey);text-align:center;padding:0 6px;z-index:1}
+.photo-slot-ico{font-size:26px;margin-bottom:5px;z-index:1}
+.photo-retake{position:absolute;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:2}
+.photo-slot.has-photo:active .photo-retake{display:flex}
+.retake-btn{background:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;color:var(--navy)}
+.photo-cap{font-size:10px;color:var(--red);font-weight:600;text-align:center;margin-top:3px;display:block}
+input[type=file]{display:none}
+.gps-btn{width:100%;background:var(--teal);color:#fff;border:none;border-radius:var(--rs);padding:12px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px}
+.gps-btn.ok{background:var(--green)}
+.gps-btn:active{opacity:.85}
+.signal-bar{border-radius:var(--rs);padding:9px 12px;font-size:13px;font-weight:600;display:none;align-items:center;gap:8px;margin-top:6px}
+.signal-bar.good{background:var(--green-lt);color:var(--green);display:flex}
+.signal-bar.marg{background:var(--amber-lt);color:var(--amber);display:flex}
+.signal-bar.poor{background:var(--red-lt);color:var(--red);display:flex}
+.job-card{background:#fff;border-radius:var(--r);padding:13px 14px;margin-bottom:10px;box-shadow:0 2px 8px rgba(13,33,55,.08);display:flex;align-items:center;gap:12px}
+.job-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.job-dot.draft{background:var(--mgrey)}.job-dot.pending{background:var(--amber)}.job-dot.sent{background:var(--green)}
+.job-info{flex:1;min-width:0}
+.job-title{font-size:14px;font-weight:700;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.job-sub{font-size:11px;color:var(--dkgrey);margin-top:2px}
+.job-btns{display:flex;gap:6px;flex-shrink:0}
+.jbtn{padding:6px 11px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer}
+.jbtn.e{background:var(--teal-lt);color:var(--teal)}
+.jbtn.s{background:var(--green-lt);color:var(--green)}
+.jbtn.d{background:var(--red-lt);color:var(--red)}
+.site-card{background:#fff;border-radius:var(--r);padding:13px 14px;margin-bottom:10px;box-shadow:0 2px 8px rgba(13,33,55,.08);cursor:pointer;border:2px solid transparent;transition:border-color .2s}
+.site-card:active,.site-card.active{border-color:var(--teal)}
+.site-name{font-size:15px;font-weight:700;color:var(--navy)}
+.site-meta{font-size:12px;color:var(--dkgrey);margin-top:3px}
+.site-meta span{margin-right:12px}
+.site-actions{display:flex;gap:6px;margin-top:10px}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(13,33,55,.6);z-index:200;align-items:flex-end;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:16px 16px 0 0;width:100%;max-height:90vh;overflow-y:auto;padding:20px 16px 32px}
+.modal-title{font-size:17px;font-weight:700;color:var(--navy);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between}
+.close-btn{background:var(--grey);border:none;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;color:var(--dkgrey);display:flex;align-items:center;justify-content:center}
+.progress-row{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#fff;border-bottom:1px solid var(--mgrey);position:sticky;top:52px;z-index:99}
+.progress-step{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.p-num{width:24px;height:24px;border-radius:50%;background:var(--mgrey);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.p-num.active{background:var(--teal)}
+.p-num.done{background:var(--green)}
+.p-lbl{font-size:11px;font-weight:600;color:var(--dkgrey)}
+.p-lbl.active{color:var(--teal)}
+.p-line{flex:1;height:2px;background:var(--mgrey);border-radius:2px}
+.p-line.done{background:var(--green)}
+.bottom-nav{position:fixed;bottom:58px;left:0;right:0;background:#fff;border-top:1px solid var(--mgrey);padding:10px 16px;display:flex;gap:10px;z-index:99}
+.info-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--grey);align-items:flex-start;gap:12px}
+.info-row:last-child{border:none}
+.info-key{font-size:11px;font-weight:700;color:var(--dkgrey);text-transform:uppercase;letter-spacing:.3px;flex-shrink:0;width:110px}
+.info-val{font-size:13px;color:var(--black);text-align:right;word-break:break-word}
+.info-val.na{color:var(--mgrey);font-style:italic}
+.review-photos{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.review-photos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px}
+.empty-state{text-align:center;padding:40px 20px;color:var(--dkgrey)}
+.divider{height:1px;background:var(--grey);margin:12px 0}
+.inline-warn{background:var(--amber-lt);color:var(--amber);border-radius:var(--rs);padding:10px 12px;font-size:12px;font-weight:600;margin-bottom:12px}
+.step-panel{display:none}
+.step-panel.active{display:block}
+.muc-list-item{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--grey)}
+.muc-list-item:last-child{border:none}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-logo">Thynk <span>H₂O</span></div>
+  <div class="topbar-right">
+    <div class="online-dot" id="netDot"></div>
+    <span class="status-txt" id="netTxt">—</span>
+  </div>
+</div>
+
+<!-- ════════════════ VIEW: INSTALL FORM ════════════════ -->
+<div class="view active" id="view-install">
+
+  <!-- Step progress -->
+  <div class="progress-row" id="progressRow">
+    <div class="progress-step">
+      <div class="p-num active" id="pn0">1</div>
+      <div class="p-lbl active" id="pl0">Site</div>
+    </div>
+    <div class="p-line" id="pl01"></div>
+    <div class="progress-step">
+      <div class="p-num" id="pn1">2</div>
+      <div class="p-lbl" id="pl1">Meter</div>
+    </div>
+    <div class="p-line" id="pl12"></div>
+    <div class="progress-step">
+      <div class="p-num" id="pn2">3</div>
+      <div class="p-lbl" id="pl2">Old</div>
+    </div>
+    <div class="p-line" id="pl23"></div>
+    <div class="progress-step">
+      <div class="p-num" id="pn3">4</div>
+      <div class="p-lbl" id="pl3">System</div>
+    </div>
+    <div class="p-line" id="pl34"></div>
+    <div class="progress-step">
+      <div class="p-num" id="pn4">5</div>
+      <div class="p-lbl" id="pl4">Review</div>
+    </div>
+  </div>
+
+  <div style="padding:16px;padding-bottom:120px">
+
+  <!-- ── STEP 0: Site selection ── -->
+  <div class="step-panel active" id="sp0">
+    <div class="section-label">Select site</div>
+    <div id="sitePickerList"></div>
+    <button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="openSiteModal(null)">+ Create new site</button>
+
+    <div class="divider"></div>
+    <div class="section-label">Installation type</div>
+    <div class="card">
+      <div class="toggle-grid toggle-grid-2">
+        <div class="toggle-opt sel" id="itype-rep" onclick="setIType('replacement')">
+          <span class="t-icon">🔄</span>
+          <div class="t-lbl">Replacement</div>
+          <div class="t-sub">Old meter exists</div>
+        </div>
+        <div class="toggle-opt" id="itype-new" onclick="setIType('newbuild')">
+          <span class="t-icon">🆕</span>
+          <div class="t-lbl">New build</div>
+          <div class="t-sub">No old meter</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Technician</div>
+    <div class="card">
+      <div class="field" id="fld-tech">
+        <label>Your name <span class="req">*</span></label>
+        <input type="text" id="f-tech" placeholder="e.g. JOHN SMITH" oninput="upper(this);chk(this)" onchange="chk(this)">
+        <div class="errmsg">Name is required</div>
+      </div>
+      <div class="field">
+        <label>Date</label>
+        <input type="date" id="f-date">
+      </div>
+    </div>
+  </div>
+
+  <!-- ── STEP 1: New meter ── -->
+  <div class="step-panel" id="sp1">
+    <div class="section-label">Device type</div>
+    <div class="card">
+      <div class="toggle-grid toggle-grid-2">
+        <div class="toggle-opt sel" data-dt="WATER METER" onclick="setDT(this)"><span class="t-icon">💧</span><div class="t-lbl">Water Meter</div></div>
+        <div class="toggle-opt" data-dt="ELECTRICAL METER" onclick="setDT(this)"><span class="t-icon">⚡</span><div class="t-lbl">Electrical Meter</div></div>
+        <div class="toggle-opt" data-dt="ZONE METER" onclick="setDT(this)"><span class="t-icon">🏗</span><div class="t-lbl">Zone Meter</div></div>
+        <div class="toggle-opt" data-dt="MUC" onclick="setDT(this)"><span class="t-icon">📡</span><div class="t-lbl">MUC</div></div>
+      </div>
+    </div>
+
+    <div class="section-label">New meter details</div>
+    <div class="card">
+      <div class="field" id="fld-ns">
+        <label>Serial number <span class="req">*</span></label>
+        <input type="text" id="f-ns" placeholder="e.g. 54586411" oninput="upper(this);chk(this)">
+        <div class="errmsg">Serial number is required</div>
+      </div>
+      <div class="field" id="fld-nr">
+        <label>Opening reading <span class="req">*</span></label>
+        <input type="number" id="f-nr" placeholder="0.000" step="0.001">
+        <div class="hint">Enter 0 if brand new meter</div>
+        <div class="errmsg">Reading is required</div>
+      </div>
+      <div class="field" id="fld-parent">
+        <label>Parent meter (zone) <span class="req">*</span></label>
+        <select id="f-parent" onchange="chk(this)">
+          <option value="">Select parent meter...</option>
+        </select>
+        <div class="hint">Which zone meter does this property report to?</div>
+        <div class="errmsg">Parent meter is required</div>
+      </div>
+      <div class="field">
+        <label>Unit / position name</label>
+        <input type="text" id="f-position" placeholder="e.g. PADDOCK DR 3326" oninput="upper(this);chk(this)">
+        <div class="hint">Pre-filled from site if set — edit if different</div>
+      </div>
+      <div class="field">
+        <label>Account number</label>
+        <input type="text" id="f-account" placeholder="e.g. SJVM3326" oninput="upper(this)">
+      </div>
+    </div>
+
+    <div class="section-label">GPS <span style="color:var(--red);font-size:10px;font-weight:700">REQUIRED</span></div>
+    <div class="card">
+      <div class="row2" style="margin-bottom:10px">
+        <div class="field">
+          <label>Latitude</label>
+          <input type="number" id="f-lat" placeholder="-29.4702" step="0.000001">
+        </div>
+        <div class="field">
+          <label>Longitude</label>
+          <input type="number" id="f-lon" placeholder="30.2371" step="0.000001">
+        </div>
+      </div>
+      <button class="gps-btn" id="gpsBtn" onclick="getGPS()">📍 Get GPS location</button>
+      <div class="hint" id="gpsNote">Tap to auto-fill from phone GPS. Stand outdoors for best accuracy.</div>
+    </div>
+
+    <div class="section-label">New meter photos <span style="color:var(--red);font-size:10px;font-weight:700">BOTH REQUIRED</span></div>
+    <div class="card">
+      <div class="photo-grid">
+        <div>
+          <div class="photo-slot" id="ps-nf" onclick="trigPhoto('nf')">
+            <span class="photo-slot-ico">📷</span>
+            <span class="photo-slot-lbl">Serial number face</span>
+            <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+          </div>
+          <span class="photo-cap">Required</span>
+        </div>
+        <div>
+          <div class="photo-slot" id="ps-ni" onclick="trigPhoto('ni')">
+            <span class="photo-slot-ico">📷</span>
+            <span class="photo-slot-lbl">Installed position</span>
+            <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+          </div>
+          <span class="photo-cap">Required</span>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:8px">Photo 1: serial number and reading clearly visible. Photo 2: meter in its installed position.</div>
+    </div>
+  </div>
+
+  <!-- ── STEP 2: Old meter ── -->
+  <div class="step-panel" id="sp2">
+    <div id="oldMeterBlock">
+      <div class="section-label">Old meter details</div>
+      <div class="card">
+        <div class="field">
+          <label>Serial number</label>
+          <input type="text" id="f-os" placeholder="e.g. 191136558" oninput="upper(this);chk(this)">
+        </div>
+        <div class="field">
+          <label>Final reading</label>
+          <input type="number" id="f-or" placeholder="e.g. 1234.567" step="0.001">
+        </div>
+      </div>
+      <div class="section-label">Old meter photos <span style="color:var(--amber);font-size:10px;font-weight:700">RECOMMENDED</span></div>
+      <div class="card">
+        <div class="photo-grid">
+          <div>
+            <div class="photo-slot" id="ps-of" onclick="trigPhoto('of')">
+              <span class="photo-slot-ico">📷</span>
+              <span class="photo-slot-lbl">Serial number face</span>
+              <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+            </div>
+          </div>
+          <div>
+            <div class="photo-slot" id="ps-or2" onclick="trigPhoto('or2')">
+              <span class="photo-slot-ico">📷</span>
+              <span class="photo-slot-lbl">Final reading</span>
+              <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:8px">Serial face + last reading before removal.</div>
+      </div>
+    </div>
+    <div id="newbuildNote" class="card" style="display:none;border-left:4px solid var(--teal)">
+      <div class="card-head">New build — no old meter</div>
+      <p style="font-size:13px;color:var(--dkgrey)">Recorded as a first-time installation. No old meter details required.</p>
+    </div>
+  </div>
+
+  <!-- ── STEP 3: System & signal ── -->
+  <div class="step-panel" id="sp3">
+    <div class="section-label">Communication system</div>
+    <div class="card">
+      <div class="toggle-grid toggle-grid-3">
+        <div class="toggle-opt sel" data-sys="OMNIA" onclick="setSys(this)"><span class="t-icon">📻</span><div class="t-lbl">Omnia</div></div>
+        <div class="toggle-opt" data-sys="LORA"   onclick="setSys(this)"><span class="t-icon">📡</span><div class="t-lbl">LoRa</div></div>
+        <div class="toggle-opt" data-sys="NBIOT"  onclick="setSys(this)"><span class="t-icon">📶</span><div class="t-lbl">NB-IoT</div></div>
+        <div class="toggle-opt" data-sys="RED"    onclick="setSys(this)"><span class="t-icon">🔴</span><div class="t-lbl">ReD</div></div>
+        <div class="toggle-opt" data-sys="AUSIOT" onclick="setSys(this)"><span class="t-icon">⚙️</span><div class="t-lbl">Aus IoT</div></div>
+        <div class="toggle-opt" data-sys="OTHER"  onclick="setSys(this)"><span class="t-icon">❓</span><div class="t-lbl">Other</div></div>
+      </div>
+    </div>
+
+    <div id="omniaBlock">
+      <div class="section-label">MUC allocation</div>
+      <div class="card">
+        <div class="field">
+          <label>MUC serial number</label>
+          <select id="f-muc" onchange="chk(this)">
+            <option value="">Select MUC or enter manually...</option>
+            <option value="PENDING">Pending signal survey</option>
+          </select>
+          <div class="hint">MUC options loaded from site setup</div>
+        </div>
+        <div class="field">
+          <label>Signal strength (dBm — absolute value)</label>
+          <input type="number" id="f-sig" placeholder="e.g. 82" min="1" max="130" oninput="showSig(this.value)">
+          <div class="hint">Enter 82 for −82 dBm reading from converter</div>
+        </div>
+        <div class="signal-bar" id="sigBar"></div>
+        <div class="field" style="margin-top:10px">
+          <label>Allocation status</label>
+          <select id="f-alloc">
+            <option value="PENDING SURVEY">PENDING SURVEY</option>
+            <option value="ALLOCATED">ALLOCATED</option>
+            <option value="PENDING DISCOVERY">PENDING DISCOVERY</option>
+            <option value="NOT VISIBLE">NOT VISIBLE</option>
+            <option value="ON HOLD">ON HOLD</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div id="otherSysBlock" style="display:none">
+      <div class="section-label">System details</div>
+      <div class="card">
+        <div class="field">
+          <label>Device / gateway serial</label>
+          <input type="text" id="f-sysser" placeholder="Serial number" oninput="upper(this)">
+        </div>
+        <div class="field">
+          <label>Additional reference</label>
+          <input type="text" id="f-sysref" placeholder="SIM, IMEI, gateway ref..." oninput="upper(this)">
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Additional photos</div>
+    <div class="card">
+      <div class="photo-grid">
+        <div>
+          <div class="photo-slot" id="ps-site" onclick="trigPhoto('site')">
+            <span class="photo-slot-ico">📷</span>
+            <span class="photo-slot-lbl">Site overview</span>
+            <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+          </div>
+        </div>
+        <div>
+          <div class="photo-slot" id="ps-issue" onclick="trigPhoto('issue')">
+            <span class="photo-slot-ico">📷</span>
+            <span class="photo-slot-lbl">Issues / notes</span>
+            <div class="photo-retake"><button class="retake-btn">Retake</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Notes</div>
+    <div class="card">
+      <div class="field">
+        <textarea id="f-notes" placeholder="Access issues, observations, anything unusual..." oninput="upper(this)"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── STEP 4: Review ── -->
+  <div class="step-panel" id="sp4">
+    <div class="section-label">Review before saving</div>
+    <div class="card" id="reviewCard"></div>
+    <div class="section-label">Photos</div>
+    <div class="card">
+      <div class="review-photos" id="reviewPhotos"></div>
+      <p class="hint" id="reviewPhotoCount" style="margin-top:8px"></p>
+    </div>
+    <div class="section-label">Submit</div>
+    <div class="card">
+      <p style="font-size:13px;color:var(--dkgrey);margin-bottom:12px">Save this installation. If offline, it will be emailed automatically when signal returns.</p>
+      <div class="field">
+        <label>Send report email to</label>
+        <input type="email" id="f-email" placeholder="you@thynkh2o.co.za">
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /padding wrapper -->
+</div><!-- /view-install -->
+
+<!-- ════════════════ VIEW: SAVED JOBS ════════════════ -->
+<div class="view" id="view-jobs">
+  <div class="section-label">Saved installations</div>
+  <div id="jobList"></div>
+</div>
+
+<!-- ════════════════ VIEW: SITES (office) ════════════════ -->
+<div class="view" id="view-sites">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+    <div class="section-label" style="margin:0">Sites</div>
+    <button class="btn btn-primary btn-sm" onclick="openSiteModal(null)">+ New site</button>
+  </div>
+  <div id="siteList"></div>
+
+  <div class="divider"></div>
+  <div class="section-label">Daily summary report</div>
+  <div class="card">
+    <div class="field">
+      <label>Site</label>
+      <select id="rptSite"></select>
+    </div>
+    <div class="field">
+      <label>Date</label>
+      <input type="date" id="rptDate">
+    </div>
+    <div class="field">
+      <label>Send report to</label>
+      <input type="email" id="rptEmail" placeholder="you@thynkh2o.co.za">
+    </div>
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn btn-primary" onclick="genSummaryReport()">Generate &amp; email daily summary</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ TAB BAR ════════════ -->
+<div class="tab-bar">
+  <div class="tab active" id="tab-install" onclick="switchView('install')">
+    <span class="tab-icon">➕</span>New Install
+  </div>
+  <div class="tab" id="tab-jobs" onclick="switchView('jobs')">
+    <span class="tab-icon">📋</span>Jobs<span class="badge" id="pendBadge">0</span>
+  </div>
+  <div class="tab" id="tab-sites" onclick="switchView('sites')">
+    <span class="tab-icon">🏢</span>Sites
+  </div>
+</div>
+
+<!-- ════════════ BOTTOM NAV (install form only) ════════════ -->
+<div class="bottom-nav" id="botNav">
+  <button class="btn btn-secondary" id="btnBack" onclick="nav(-1)" style="display:none">Back</button>
+  <button class="btn btn-primary"   id="btnNext" onclick="nav(1)">Next</button>
+  <button class="btn btn-success"   id="btnSubmit" onclick="submitJob()" style="display:none">Save &amp; email</button>
+  <button class="btn btn-secondary" id="btnDraft"  onclick="saveDraft()" style="display:none">Save draft</button>
+</div>
+
+<!-- ════════════ SITE SETUP MODAL ════════════ -->
+<div class="modal-bg" id="siteModal">
+  <div class="modal">
+    <div class="modal-title">
+      <span id="siteModalTitle">New site</span>
+      <button class="close-btn" onclick="closeSiteModal()">✕</button>
+    </div>
+
+    <div class="section-label" style="margin-top:0">Site information</div>
+    <div class="field">
+      <label>Estate name <span class="req">*</span></label>
+      <input type="text" id="sm-name" placeholder="e.g. ST JOHNS VILLAGE" oninput="upper(this)">
+    </div>
+    <div class="field">
+      <label>Site address</label>
+      <input type="text" id="sm-addr" placeholder="e.g. 3302 KARKLOOF RD, HOWICK" oninput="upper(this)">
+    </div>
+    <div class="field">
+      <label>Contact person</label>
+      <input type="text" id="sm-contact" placeholder="e.g. GARY MC DOWELL" oninput="upper(this)">
+    </div>
+    <div class="field">
+      <label>Contact cell</label>
+      <input type="tel" id="sm-cell" placeholder="+27 60 865 3911">
+    </div>
+    <div class="field">
+      <label>Default phase</label>
+      <select id="sm-phase">
+        <option value="">Select...</option>
+        <option>PHASE 1</option><option>PHASE 2</option><option>PHASE 3</option>
+        <option>NEW BUILD</option><option>ESTATE REPLACEMENT</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>AMR system</label>
+      <select id="sm-sys">
+        <option value="OMNIA">Omnia (Kamstrup)</option>
+        <option value="LORA">LoRa</option>
+        <option value="NBIOT">NB-IoT</option>
+        <option value="RED">ReD</option>
+        <option value="AUSIOT">Aus IoT</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Default report email</label>
+      <input type="email" id="sm-email" placeholder="you@thynkh2o.co.za">
+    </div>
+
+    <div class="section-label">Parent meters (zones)</div>
+    <div id="pmList" style="margin-bottom:8px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+      <div class="field" style="margin:0">
+        <label>Serial</label>
+        <input type="text" id="pm-serial" placeholder="53070289" oninput="upper(this)">
+      </div>
+      <div class="field" style="margin:0">
+        <label>Label</label>
+        <input type="text" id="pm-label" placeholder="Estate Check Meter" oninput="upper(this)">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="addPM()" style="margin-bottom:0;height:42px">Add</button>
+    </div>
+
+    <div class="section-label">MUC units on site</div>
+    <div id="mucList" style="margin-bottom:8px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end">
+      <div class="field" style="margin:0">
+        <label>MUC serial</label>
+        <input type="text" id="muc-serial" placeholder="36773880" oninput="upper(this)">
+      </div>
+      <div class="field" style="margin:0">
+        <label>Position name</label>
+        <input type="text" id="muc-label" placeholder="MUC PADDOCK 3326" oninput="upper(this)">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="addMUC()" style="height:42px">Add</button>
+    </div>
+
+    <div class="section-label">Technician team</div>
+    <div id="techList" style="margin-bottom:8px"></div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+      <div class="field" style="margin:0">
+        <label>Name</label>
+        <input type="text" id="tech-name" placeholder="TECHNICIAN NAME" oninput="upper(this)">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="addTech()" style="height:42px">Add</button>
+    </div>
+
+    <div class="btn-row" style="margin-top:20px">
+      <button class="btn btn-success" onclick="saveSite()">Save site</button>
+    </div>
+  </div>
+</div>
+
+<!-- File inputs -->
+<input type="file" id="fi-nf"   accept="image/*" capture="environment" onchange="handlePic(this,'nf')">
+<input type="file" id="fi-ni"   accept="image/*" capture="environment" onchange="handlePic(this,'ni')">
+<input type="file" id="fi-of"   accept="image/*" capture="environment" onchange="handlePic(this,'of')">
+<input type="file" id="fi-or2"  accept="image/*" capture="environment" onchange="handlePic(this,'or2')">
+<input type="file" id="fi-site" accept="image/*" capture="environment" onchange="handlePic(this,'site')">
+<input type="file" id="fi-issue"accept="image/*" capture="environment" onchange="handlePic(this,'issue')">
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let step = 0;
+const STEPS = 5;
+let itype = 'replacement';
+let dtype = 'WATER METER';
+let stype = 'OMNIA';
+const pics = {};
+let activeSiteId = null;
+let editingSiteId = null;
+
+// Temp site modal lists
+let tmpPMs = [], tmpMUCs = [], tmpTechs = [];
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  document.getElementById('f-date').value = today();
+  document.getElementById('rptDate').value = today();
+  checkNet();
+  renderSitePicker();
+  renderSiteList();
+  renderJobs();
+  updateBadge();
+  const saved = ls('thynk-tech');
+  if (saved) document.getElementById('f-tech').value = saved;
+});
+window.addEventListener('online',  () => { checkNet(); trySendPending(); });
+window.addEventListener('offline', checkNet);
+
+function today() { return new Date().toISOString().split('T')[0]; }
+function ls(k)    { try { return localStorage.getItem(k); } catch(e) { return null; } }
+function lsj(k)   { try { return JSON.parse(ls(k) || '[]'); } catch(e) { return []; } }
+function lss(k,v) { try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch(e) {} }
+
+function checkNet() {
+  const on = navigator.onLine;
+  document.getElementById('netDot').className = 'online-dot ' + (on ? 'on' : 'off');
+  document.getElementById('netTxt').textContent = on ? 'Online' : 'Offline';
+}
+
+// ── Views ──────────────────────────────────────────────────────────────────
+function switchView(v) {
+  document.querySelectorAll('.view').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  document.getElementById('view-' + v).classList.add('active');
+  document.getElementById('tab-' + v).classList.add('active');
+  document.getElementById('botNav').style.display = v === 'install' ? 'flex' : 'none';
+  if (v === 'jobs')   renderJobs();
+  if (v === 'sites')  { renderSiteList(); populateRptSelect(); }
+}
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+function nav(dir) {
+  if (dir === 1 && !validateStep(step)) return;
+  setStep(step + dir);
+}
+
+function setStep(n) {
+  if (n < 0 || n >= STEPS) return;
+  document.getElementById('sp' + step).classList.remove('active');
+  step = n;
+  document.getElementById('sp' + step).classList.add('active');
+  if (step === 4) buildReview();
+  updateProgress();
+  updateBotNav();
+  window.scrollTo(0, 0);
+}
+
+function updateProgress() {
+  for (let i = 0; i < STEPS; i++) {
+    const num = document.getElementById('pn' + i);
+    const lbl = document.getElementById('pl' + i);
+    num.className = 'p-num' + (i < step ? ' done' : i === step ? ' active' : '');
+    lbl.className = 'p-lbl' + (i === step ? ' active' : '');
+    num.textContent = i < step ? '✓' : i + 1;
+    if (i < STEPS - 1) {
+      const line = document.getElementById('pl' + i + (i + 1));
+      if (line) line.className = 'p-line' + (i < step ? ' done' : '');
+    }
+  }
+}
+
+function updateBotNav() {
+  const last = step === STEPS - 1;
+  const first = step === 0;
+  document.getElementById('btnBack').style.display   = first ? 'none' : 'flex';
+  document.getElementById('btnNext').style.display   = last  ? 'none' : 'flex';
+  document.getElementById('btnSubmit').style.display = last  ? 'flex' : 'none';
+  document.getElementById('btnDraft').style.display  = last  ? 'flex' : 'none';
+}
+
+// ── Validation ─────────────────────────────────────────────────────────────
+function validateStep(s) {
+  let ok = true;
+  const req = {
+    0: [['f-tech', 'fld-tech']],
+    1: [['f-ns','fld-ns'],['f-parent','fld-parent']],
+    2: [], 3: [], 4: [],
+  };
+  (req[s] || []).forEach(([id, fld]) => {
+    const el = document.getElementById(id);
+    if (!el || !el.value) {
+      el && el.classList.add('err');
+      document.getElementById(fld) && document.getElementById(fld).classList.add('showerr');
+      ok = false;
+    }
+  });
+  if (s === 0 && !activeSiteId) {
+    alert('Please select a site before continuing.');
+    return false;
+  }
+  if (s === 1) {
+    const nr = document.getElementById('f-nr').value;
+    if (nr === '') {
+      document.getElementById('fld-nr').classList.add('showerr');
+      ok = false;
+    }
+    if (!pics['nf'] || !pics['ni']) {
+      document.querySelectorAll('[id^="ps-n"]').forEach(sl => {
+        if (!sl.classList.contains('has-photo')) sl.classList.add('need-photo');
+      });
+      alert('Both new meter photos are required before continuing.');
+      return false;
+    }
+  }
+  if (s === 0 && (!v('f-lat') || !v('f-lon'))) {
+    if (!confirm('GPS coordinates not captured. Continue without GPS?\n\nThis will be flagged until confirmed.')) return false;
+  }
+  return ok;
+}
+
+// ── Toggle helpers ─────────────────────────────────────────────────────────
+function setIType(t) {
+  itype = t;
+  document.getElementById('itype-rep').classList.toggle('sel', t === 'replacement');
+  document.getElementById('itype-new').classList.toggle('sel', t === 'newbuild');
+  document.getElementById('oldMeterBlock').style.display = t === 'newbuild' ? 'none' : 'block';
+  document.getElementById('newbuildNote').style.display  = t === 'newbuild' ? 'block' : 'none';
+}
+
+function setDT(el) {
+  document.querySelectorAll('[data-dt]').forEach(x => x.classList.remove('sel'));
+  el.classList.add('sel');
+  dtype = el.dataset.dt;
+}
+
+function setSys(el) {
+  document.querySelectorAll('[data-sys]').forEach(x => x.classList.remove('sel'));
+  el.classList.add('sel');
+  stype = el.dataset.sys;
+  document.getElementById('omniaBlock').style.display     = stype === 'OMNIA' ? 'block' : 'none';
+  document.getElementById('otherSysBlock').style.display  = stype === 'OMNIA' ? 'none'  : 'block';
+}
+
+// ── GPS ────────────────────────────────────────────────────────────────────
+function getGPS() {
+  const btn = document.getElementById('gpsBtn');
+  btn.textContent = '⏳ Getting location...';
+  btn.disabled = true;
+  if (!navigator.geolocation) {
+    document.getElementById('gpsNote').textContent = 'GPS not available. Enter manually.';
+    btn.disabled = false; return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    document.getElementById('f-lat').value = pos.coords.latitude.toFixed(6);
+    document.getElementById('f-lon').value = pos.coords.longitude.toFixed(6);
+    document.getElementById('f-lat').classList.add('ok');
+    document.getElementById('f-lon').classList.add('ok');
+    btn.textContent = '✅ GPS captured';
+    btn.className = 'gps-btn ok';
+    btn.disabled = false;
+    const acc = Math.round(pos.coords.accuracy);
+    document.getElementById('gpsNote').textContent = `Accuracy: ±${acc}m${acc > 25 ? ' — move outdoors for better accuracy' : ' — good'}`;
+  }, () => {
+    document.getElementById('gpsNote').textContent = 'Could not get location. Enter manually or try again outside.';
+    btn.textContent = '📍 Try again';
+    btn.className = 'gps-btn';
+    btn.disabled = false;
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+}
+
+// ── Photos ─────────────────────────────────────────────────────────────────
+function trigPhoto(id) { document.getElementById('fi-' + id).click(); }
+
+function handlePic(input, id) {
+  if (!input.files || !input.files[0]) return;
+  const r = new FileReader();
+  r.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      const sc = Math.min(1, 1200 / img.width);
+      c.width = Math.round(img.width * sc);
+      c.height = Math.round(img.height * sc);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      const url = c.toDataURL('image/jpeg', 0.82);
+      pics[id] = url;
+      const sl = document.getElementById('ps-' + id);
+      sl.classList.add('has-photo');
+      sl.classList.remove('need-photo');
+      let im = sl.querySelector('img');
+      if (!im) { im = document.createElement('img'); sl.insertBefore(im, sl.firstChild); }
+      im.src = url;
+      sl.querySelector('.photo-slot-ico').style.display = 'none';
+      sl.querySelector('.photo-slot-lbl').style.display = 'none';
+    };
+    img.src = e.target.result;
+  };
+  r.readAsDataURL(input.files[0]);
+}
+
+// ── Signal ─────────────────────────────────────────────────────────────────
+function showSig(val) {
+  const bar = document.getElementById('sigBar');
+  const n = parseInt(val);
+  if (!val || isNaN(n)) { bar.className = 'signal-bar'; return; }
+  if (n <= 96)       { bar.className = 'signal-bar good'; bar.textContent = '✔ Good signal — allocate to this MUC'; }
+  else if (n <= 105) { bar.className = 'signal-bar marg'; bar.textContent = '⚠ Marginal — flag for monitoring'; }
+  else               { bar.className = 'signal-bar poor'; bar.textContent = '✘ Poor — do not allocate to this MUC'; }
+}
+
+// ── Auto upper ─────────────────────────────────────────────────────────────
+function upper(el) { const p = el.selectionStart; el.value = el.value.toUpperCase(); try { el.setSelectionRange(p,p); } catch(e){} }
+function chk(el)   { el.classList.toggle('ok', !!el.value); el.classList.remove('err'); el.closest('.field')?.classList.remove('showerr'); }
+function v(id)     { const e = document.getElementById(id); return e ? e.value : ''; }
+
+// ── Sites ──────────────────────────────────────────────────────────────────
+function getSites() { return lsj('thynk-sites'); }
+function saveSites(s) { lss('thynk-sites', s); }
+
+function openSiteModal(id) {
+  editingSiteId = id;
+  tmpPMs = []; tmpMUCs = []; tmpTechs = [];
+  const sites = getSites();
+  const site = id ? sites.find(s => s.id === id) : null;
+
+  document.getElementById('siteModalTitle').textContent = site ? 'Edit site' : 'New site';
+  document.getElementById('sm-name').value    = site ? site.name    : '';
+  document.getElementById('sm-addr').value    = site ? site.addr    : '';
+  document.getElementById('sm-contact').value = site ? site.contact : '';
+  document.getElementById('sm-cell').value    = site ? site.cell    : '';
+  document.getElementById('sm-phase').value   = site ? site.phase   : '';
+  document.getElementById('sm-sys').value     = site ? site.sys     : 'OMNIA';
+  document.getElementById('sm-email').value   = site ? site.email   : '';
+
+  if (site) {
+    tmpPMs    = [...(site.pms    || [])];
+    tmpMUCs   = [...(site.mucs   || [])];
+    tmpTechs  = [...(site.techs  || [])];
+  }
+  renderModalLists();
+  document.getElementById('siteModal').classList.add('open');
+}
+
+function closeSiteModal() { document.getElementById('siteModal').classList.remove('open'); }
+
+function renderModalLists() {
+  document.getElementById('pmList').innerHTML = tmpPMs.map((pm, i) =>
+    `<div class="muc-list-item"><span style="font-size:13px"><strong>${pm.serial}</strong> — ${pm.label}</span><button class="jbtn d" onclick="tmpPMs.splice(${i},1);renderModalLists()">✕</button></div>`
+  ).join('') || '<p style="font-size:12px;color:var(--dkgrey);margin-bottom:6px">No parent meters added yet</p>';
+
+  document.getElementById('mucList').innerHTML = tmpMUCs.map((m, i) =>
+    `<div class="muc-list-item"><span style="font-size:13px"><strong>${m.serial}</strong> — ${m.label}</span><button class="jbtn d" onclick="tmpMUCs.splice(${i},1);renderModalLists()">✕</button></div>`
+  ).join('') || '<p style="font-size:12px;color:var(--dkgrey);margin-bottom:6px">No MUCs added yet</p>';
+
+  document.getElementById('techList').innerHTML = tmpTechs.map((t, i) =>
+    `<div class="muc-list-item"><span style="font-size:13px">${t}</span><button class="jbtn d" onclick="tmpTechs.splice(${i},1);renderModalLists()">✕</button></div>`
+  ).join('') || '<p style="font-size:12px;color:var(--dkgrey);margin-bottom:6px">No technicians added yet</p>';
+}
+
+function addPM() {
+  const s = document.getElementById('pm-serial').value.trim().toUpperCase();
+  const l = document.getElementById('pm-label').value.trim().toUpperCase();
+  if (!s) return;
+  tmpPMs.push({ serial: s, label: l || s });
+  document.getElementById('pm-serial').value = '';
+  document.getElementById('pm-label').value = '';
+  renderModalLists();
+}
+
+function addMUC() {
+  const s = document.getElementById('muc-serial').value.trim().toUpperCase();
+  const l = document.getElementById('muc-label').value.trim().toUpperCase();
+  if (!s) return;
+  tmpMUCs.push({ serial: s, label: l || s });
+  document.getElementById('muc-serial').value = '';
+  document.getElementById('muc-label').value = '';
+  renderModalLists();
+}
+
+function addTech() {
+  const n = document.getElementById('tech-name').value.trim().toUpperCase();
+  if (!n) return;
+  tmpTechs.push(n);
+  document.getElementById('tech-name').value = '';
+  renderModalLists();
+}
+
+function saveSite() {
+  const name = document.getElementById('sm-name').value.trim().toUpperCase();
+  if (!name) { alert('Estate name is required.'); return; }
+  const sites = getSites();
+  const site = {
+    id:      editingSiteId || Date.now().toString(),
+    name,
+    addr:    document.getElementById('sm-addr').value.trim().toUpperCase(),
+    contact: document.getElementById('sm-contact').value.trim().toUpperCase(),
+    cell:    document.getElementById('sm-cell').value.trim(),
+    phase:   document.getElementById('sm-phase').value,
+    sys:     document.getElementById('sm-sys').value,
+    email:   document.getElementById('sm-email').value.trim(),
+    pms:     [...tmpPMs],
+    mucs:    [...tmpMUCs],
+    techs:   [...tmpTechs],
+  };
+  if (editingSiteId) {
+    const idx = sites.findIndex(s => s.id === editingSiteId);
+    if (idx >= 0) sites[idx] = site; else sites.push(site);
+  } else {
+    sites.push(site);
+  }
+  saveSites(sites);
+  closeSiteModal();
+  renderSiteList();
+  renderSitePicker();
+  populateRptSelect();
+  alert(`Site "${site.name}" saved.`);
+}
+
+function deleteSite(id) {
+  if (!confirm('Delete this site? This cannot be undone.')) return;
+  saveSites(getSites().filter(s => s.id !== id));
+  if (activeSiteId === id) activeSiteId = null;
+  renderSiteList();
+  renderSitePicker();
+}
+
+function renderSiteList() {
+  const sites = getSites();
+  const el = document.getElementById('siteList');
+  if (!sites.length) { el.innerHTML = '<div class="empty-state">No sites set up yet.<br>Tap "New site" to create one.</div>'; return; }
+  el.innerHTML = sites.map(s => `
+    <div class="site-card">
+      <div class="site-name">${s.name}</div>
+      <div class="site-meta">
+        <span>${s.phase || 'Phase TBC'}</span>
+        <span>${s.sys || 'Omnia'}</span>
+        <span>${s.pms.length} zones · ${s.mucs.length} MUCs · ${s.techs.length} techs</span>
+      </div>
+      <div class="site-actions">
+        <button class="jbtn e" onclick="openSiteModal('${s.id}')">Edit</button>
+        <button class="jbtn d" onclick="deleteSite('${s.id}')">Delete</button>
+      </div>
+    </div>`).join('');
+}
+
+function renderSitePicker() {
+  const sites = getSites();
+  const el = document.getElementById('sitePickerList');
+  if (!sites.length) {
+    el.innerHTML = '<div class="inline-warn">No sites set up yet. Go to the Sites tab to create one first.</div>';
+    return;
+  }
+  el.innerHTML = sites.map(s => `
+    <div class="site-card ${activeSiteId === s.id ? 'active' : ''}" onclick="selectSite('${s.id}')">
+      <div class="site-name">${s.name}</div>
+      <div class="site-meta"><span>${s.phase || ''}</span><span>${s.pms.length} zones · ${s.mucs.length} MUCs</span></div>
+    </div>`).join('');
+}
+
+function selectSite(id) {
+  activeSiteId = id;
+  renderSitePicker();
+  const site = getSites().find(s => s.id === id);
+  if (!site) return;
+
+  // Pre-fill phase
+  if (site.phase) document.getElementById('f-alloc').value = 'PENDING SURVEY';
+
+  // Pre-fill system
+  setSys(document.querySelector(`[data-sys="${site.sys || 'OMNIA'}"]`) || document.querySelector('[data-sys="OMNIA"]'));
+
+  // Populate parent meter dropdown
+  const pm = document.getElementById('f-parent');
+  pm.innerHTML = '<option value="">Select parent meter...</option>';
+  (site.pms || []).forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.serial;
+    o.textContent = `${p.serial} — ${p.label}`;
+    pm.appendChild(o);
+  });
+
+  // Populate MUC dropdown
+  const muc = document.getElementById('f-muc');
+  muc.innerHTML = '<option value="">Select MUC...</option><option value="PENDING">Pending signal survey</option>';
+  (site.mucs || []).forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.serial;
+    o.textContent = `${m.serial} — ${m.label}`;
+    muc.appendChild(o);
+  });
+
+  // Default email
+  if (site.email) document.getElementById('f-email').value = site.email;
+}
+
+function populateRptSelect() {
+  const sites = getSites();
+  const sel = document.getElementById('rptSite');
+  sel.innerHTML = sites.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+}
+
+// ── Jobs ───────────────────────────────────────────────────────────────────
+function getJobs() { return lsj('thynk-jobs'); }
+
+function buildJob() {
+  const site = getSites().find(s => s.id === activeSiteId) || {};
+  return {
+    id:        Date.now().toString(),
+    created:   new Date().toISOString(),
+    status:    'pending',
+    siteId:    activeSiteId,
+    siteName:  site.name || '',
+    itype, dtype, stype,
+    tech:      v('f-tech'),
+    date:      v('f-date'),
+    position:  v('f-position'),
+    account:   v('f-account'),
+    phase:     site.phase || '',
+    lat:       v('f-lat'),
+    lon:       v('f-lon'),
+    newSerial: v('f-ns'),
+    newReading:v('f-nr'),
+    parent:    v('f-parent'),
+    oldSerial: itype === 'newbuild' ? 'N/A' : v('f-os'),
+    oldReading:itype === 'newbuild' ? 'N/A' : v('f-or'),
+    muc:       v('f-muc'),
+    signal:    v('f-sig'),
+    allocStatus:v('f-alloc'),
+    sysSerial: v('f-sysser'),
+    sysRef:    v('f-sysref'),
+    notes:     v('f-notes'),
+    email:     v('f-email'),
+    photos:    {...pics},
+  };
+}
+
+function submitJob() {
+  const job = buildJob();
+  lss('thynk-tech', job.tech);
+  const jobs = getJobs();
+  jobs.push(job);
+  try { lss('thynk-jobs', jobs); }
+  catch(e) {
+    const stripped = {...job, photos:{}};
+    jobs[jobs.length-1] = stripped;
+    lss('thynk-jobs', jobs);
+    alert('Storage nearly full — job saved without photos. Clear old jobs to free space.');
+  }
+  updateBadge();
+  sendMeterEmail(job);
+  if (confirm(`Installation saved!\n\nYour email app will open with the report for ${job.position || job.siteName}.\n\nStart another installation?`)) {
+    resetForm();
+  } else {
+    switchView('jobs');
+  }
+}
+
+function saveDraft() {
+  const job = buildJob();
+  job.status = 'draft';
+  lss('thynk-tech', job.tech);
+  const jobs = getJobs();
+  jobs.push(job);
+  lss('thynk-jobs', jobs);
+  updateBadge();
+  alert('Draft saved. Continue from the Jobs tab.');
+}
+
+function renderJobs() {
+  const jobs = getJobs().slice().reverse();
+  const el = document.getElementById('jobList');
+  if (!jobs.length) { el.innerHTML = '<div class="empty-state">No installations saved yet.</div>'; return; }
+  el.innerHTML = jobs.map(j => `
+    <div class="job-card">
+      <div class="job-dot ${j.status}"></div>
+      <div class="job-info">
+        <div class="job-title">${j.position || j.siteName || 'Unnamed'}</div>
+        <div class="job-sub">${j.siteName || ''} · ${j.date || ''} · ${j.tech || ''}</div>
+        <div class="job-sub" style="margin-top:3px">
+          <span class="tag ${j.status==='sent'?'tag-green':j.status==='draft'?'tag-teal':'tag-amber'}">${j.status.toUpperCase()}</span>
+          &nbsp;${j.newSerial ? 'SN: '+j.newSerial : ''}
+        </div>
+      </div>
+      <div class="job-btns">
+        ${j.status!=='sent'?`<button class="jbtn s" onclick="emailJob('${j.id}')">Email</button>`:''}
+        <button class="jbtn d" onclick="delJob('${j.id}')">Del</button>
+      </div>
+    </div>`).join('');
+}
+
+function emailJob(id) {
+  const job = getJobs().find(j => j.id === id);
+  if (!job) return;
+  sendMeterEmail(job);
+  const jobs = getJobs().map(j => j.id === id ? {...j, status:'sent'} : j);
+  lss('thynk-jobs', jobs);
+  renderJobs();
+  updateBadge();
+}
+
+function delJob(id) {
+  if (!confirm('Delete this job? Cannot be undone.')) return;
+  lss('thynk-jobs', getJobs().filter(j => j.id !== id));
+  renderJobs();
+  updateBadge();
+}
+
+function updateBadge() {
+  const n = getJobs().filter(j => j.status === 'pending' || j.status === 'draft').length;
+  const b = document.getElementById('pendBadge');
+  b.style.display = n ? 'inline' : 'none';
+  b.textContent = n;
+}
+
+function trySendPending() { updateBadge(); }
+
+// ── Individual meter email ─────────────────────────────────────────────────
+function sendMeterEmail(job) {
+  const to = job.email || '';
+  const sub = encodeURIComponent(`Thynk H2O Install Report — ${job.position || job.siteName} — ${job.date}`);
+  const photoNote = Object.keys(job.photos || {}).length
+    ? `${Object.keys(job.photos).length} photo(s) captured — saved to device gallery, attach manually.`
+    : 'No photos captured.';
+  const body = encodeURIComponent(
+`THYNK H2O — INDIVIDUAL METER INSTALLATION REPORT
+=================================================
+Date:        ${job.date}
+Technician:  ${job.tech}
+Site:        ${job.siteName}
+
+PROPERTY
+Position:    ${job.position || '—'}
+Account No:  ${job.account || 'N/A'}
+Phase:       ${job.phase || '—'}
+Device Type: ${job.dtype}
+Install Type:${job.itype === 'newbuild' ? 'NEW BUILD (first installation)' : 'REPLACEMENT'}
+
+GPS COORDINATES
+Latitude:    ${job.lat || 'NOT CAPTURED — REQUIRED'}
+Longitude:   ${job.lon || 'NOT CAPTURED — REQUIRED'}
+
+NEW METER
+Serial No:   ${job.newSerial}
+Opening Reading: ${job.newReading}
+Parent Meter:${job.parent}
+
+OLD METER
+Serial No:   ${job.oldSerial || 'N/A'}
+Final Reading:${job.oldReading || 'N/A'}
+
+SYSTEM & ALLOCATION
+System:      ${job.stype}
+MUC Serial:  ${job.muc || 'Pending survey'}
+Signal (dBm):${job.signal || 'Not measured'}
+Alloc Status:${job.allocStatus || 'PENDING SURVEY'}
+
+NOTES
+${job.notes || 'None'}
+
+PHOTOS
+${photoNote}
+
+================================================
+WORKBOOK ENTRY — copy values below into Sheet 2:
+================================================
+Position Name:    ${job.position || ''}
+Account No:       ${job.account || ''}
+Device Type:      ${job.dtype}
+New Serial No:    ${job.newSerial}
+New Reading:      ${job.newReading}
+Old Serial No:    ${job.oldSerial || 'N/A'}
+Old Reading:      ${job.oldReading || 'N/A'}
+Parent Meter:     ${job.parent}
+Latitude:         ${job.lat || 'ESTIMATED'}
+Longitude:        ${job.lon || 'ESTIMATED'}
+Phase:            ${job.phase || ''}
+MUC Allocated:    ${job.muc || ''}
+Signal dBm:       ${job.signal || ''}
+Allocation Status:${job.allocStatus || 'PENDING SURVEY'}
+`);
+  window.location.href = `mailto:${to}?subject=${sub}&body=${body}`;
+}
+
+// ── Daily summary report ───────────────────────────────────────────────────
+function genSummaryReport() {
+  const siteId = document.getElementById('rptSite').value;
+  const date   = document.getElementById('rptDate').value;
+  const email  = document.getElementById('rptEmail').value.trim();
+  if (!siteId) { alert('Select a site.'); return; }
+  if (!date)   { alert('Select a date.'); return; }
+
+  const site = getSites().find(s => s.id === siteId);
+  const jobs = getJobs().filter(j => j.siteId === siteId && j.date === date && j.status !== 'draft');
+
+  if (!jobs.length) {
+    alert(`No submitted installations found for ${site ? site.name : 'this site'} on ${date}.`);
+    return;
+  }
+
+  const techs = [...new Set(jobs.map(j => j.tech).filter(Boolean))].join(', ');
+  const newBuild   = jobs.filter(j => j.itype === 'newbuild').length;
+  const replacements = jobs.filter(j => j.itype === 'replacement').length;
+  const allocated  = jobs.filter(j => j.allocStatus === 'ALLOCATED').length;
+  const pending    = jobs.filter(j => j.allocStatus === 'PENDING SURVEY').length;
+  const noGPS      = jobs.filter(j => !j.lat || !j.lon).length;
+  const noPhotos   = jobs.filter(j => !j.photos || Object.keys(j.photos).length === 0).length;
+
+  const meterLines = jobs.map((j, i) =>
+`${String(i+1).padStart(3)}. ${(j.position||'—').padEnd(28)} Serial: ${(j.newSerial||'—').padEnd(12)} ${j.itype==='newbuild'?'NEW BUILD':'Replacement  '} GPS: ${j.lat?`${j.lat},${j.lon}`:'MISSING  '} MUC: ${j.muc||'Pending'} Signal: ${j.signal?j.signal+'dBm':'—'} Status: ${j.allocStatus||'—'}`
+  ).join('\n');
+
+  const sub = encodeURIComponent(`Thynk H2O DAILY SUMMARY — ${site ? site.name : ''} — ${date}`);
+  const body = encodeURIComponent(
+`THYNK H2O — DAILY SITE INSTALLATION SUMMARY
+============================================
+Site:          ${site ? site.name : ''}
+Date:          ${date}
+Technicians:   ${techs}
+Report by:     Office
+
+TOTALS
+Total meters installed:  ${jobs.length}
+  — Replacements:        ${replacements}
+  — New builds:          ${newBuild}
+Allocated to MUC:        ${allocated} of ${jobs.length}
+Pending signal survey:   ${pending}
+Missing GPS:             ${noGPS}${noGPS > 0 ? ' ← ACTION REQUIRED' : ''}
+Missing photos:          ${noPhotos}
+
+METER DETAIL
+${'No.  Position                     Serial       Type           GPS                      MUC       Signal  Status'}
+${'---  ---------------------------  -----------  -------------  -----------------------  --------  ------  -----------'}
+${meterLines}
+
+============================================
+ACTION ITEMS
+${noGPS > 0 ? `• ${noGPS} meter(s) have no GPS coordinates — confirm before workbook entry.\n` : ''}${pending > 0 ? `• ${pending} meter(s) still pending MUC signal survey.\n` : ''}${noPhotos > 0 ? `• ${noPhotos} meter(s) have no photos — follow up with technicians.\n` : ''}${(noGPS + pending + noPhotos) === 0 ? '• All installations complete — ready for workbook entry.' : ''}
+============================================
+WORKBOOK ENTRY SUMMARY
+(Copy each row below into Sheet 2 of the Master Workbook)
+
+Position Name | Account | Device Type | New Serial | New Reading | Old Serial | Old Reading | Parent | Latitude | Longitude | Phase | MUC | Signal | Status
+${jobs.map(j => [
+  j.position||'', j.account||'', j.dtype||'WATER METER', j.newSerial||'',
+  j.newReading||'', j.oldSerial||'N/A', j.oldReading||'N/A', j.parent||'',
+  j.lat||'ESTIMATED', j.lon||'ESTIMATED', j.phase||'', j.muc||'',
+  j.signal||'', j.allocStatus||'PENDING SURVEY'
+].join(' | ')).join('\n')}
+`);
+  window.location.href = `mailto:${email}?subject=${sub}&body=${body}`;
+}
+
+// ── Review ─────────────────────────────────────────────────────────────────
+function buildReview() {
+  const site = getSites().find(s => s.id === activeSiteId);
+  const rows = [
+    ['Site',        site ? site.name : '⚠ No site selected'],
+    ['Position',    v('f-position') || '—'],
+    ['Account',     v('f-account')  || '—'],
+    ['Phase',       site ? site.phase : '—'],
+    ['Install type',itype === 'newbuild' ? 'New build' : 'Replacement'],
+    ['Device type', dtype],
+    ['New serial',  v('f-ns')],
+    ['New reading', v('f-nr')],
+    ['Parent meter',v('f-parent') || '—'],
+    ['Old serial',  itype === 'newbuild' ? 'N/A' : (v('f-os') || '—')],
+    ['Old reading', itype === 'newbuild' ? 'N/A' : (v('f-or') || '—')],
+    ['System',      stype],
+    ['MUC',         v('f-muc') || 'Pending'],
+    ['Signal',      v('f-sig') ? v('f-sig') + ' dBm' : '—'],
+    ['Alloc status',v('f-alloc')],
+    ['GPS',         v('f-lat') ? v('f-lat') + ', ' + v('f-lon') : '⚠ Not captured'],
+    ['Technician',  v('f-tech')],
+    ['Date',        v('f-date')],
+  ];
+  document.getElementById('reviewCard').innerHTML = rows.map(([k, val]) =>
+    `<div class="info-row"><div class="info-key">${k}</div><div class="info-val ${!val||val==='—'?'na':''}">${val||'—'}</div></div>`
+  ).join('');
+
+  const pa = document.getElementById('reviewPhotos');
+  const slots = ['nf','ni','of','or2','site','issue'];
+  pa.innerHTML = '';
+  let cnt = 0;
+  slots.forEach(s => { if (pics[s]) { pa.innerHTML += `<img src="${pics[s]}"`+` alt="photo">`; cnt++; } });
+  if (!cnt) pa.innerHTML = '<p style="font-size:12px;color:var(--dkgrey)">No photos captured yet</p>';
+  document.getElementById('reviewPhotoCount').textContent = `${cnt} photo${cnt!==1?'s':''} attached`;
+}
+
+// ── Reset ──────────────────────────────────────────────────────────────────
+function resetForm() {
+  ['f-ns','f-nr','f-os','f-or','f-position','f-account','f-muc','f-sig','f-sysser','f-sysref','f-notes','f-email','f-lat','f-lon'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.value=''; el.classList.remove('ok','err'); }
+  });
+  document.getElementById('f-date').value = today();
+  document.getElementById('f-alloc').value = 'PENDING SURVEY';
+  document.getElementById('f-parent').innerHTML = '<option value="">Select parent meter...</option>';
+  const saved = ls('thynk-tech');
+  if (saved) document.getElementById('f-tech').value = saved;
+
+  Object.keys(pics).forEach(k => delete pics[k]);
+  ['nf','ni','of','or2','site','issue'].forEach(id => {
+    const sl = document.getElementById('ps-' + id);
+    if (!sl) return;
+    sl.classList.remove('has-photo','need-photo');
+    const im = sl.querySelector('img');
+    if (im) im.remove();
+    sl.querySelector('.photo-slot-ico').style.display = '';
+    sl.querySelector('.photo-slot-lbl').style.display = '';
+  });
+
+  setIType('replacement');
+  setSys(document.querySelector('[data-sys="OMNIA"]'));
+  document.querySelectorAll('[data-dt]').forEach(x => x.classList.remove('sel'));
+  document.querySelector('[data-dt="WATER METER"]').classList.add('sel');
+  dtype = 'WATER METER';
+
+  const gpsBtn = document.getElementById('gpsBtn');
+  gpsBtn.textContent = '📍 Get GPS location';
+  gpsBtn.className = 'gps-btn';
+  gpsBtn.disabled = false;
+  document.getElementById('gpsNote').textContent = 'Tap to auto-fill from phone GPS.';
+  document.getElementById('sigBar').className = 'signal-bar';
+
+  activeSiteId = null;
+  renderSitePicker();
+  setStep(0);
+}
+</script>
+</body>
+</html>
