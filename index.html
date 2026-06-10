@@ -475,13 +475,10 @@ input[type=file]{display:none}
       <label>Date</label>
       <input type="date" id="rptDate">
     </div>
-    <div class="field">
-      <label>Send report to</label>
-      <input type="email" id="rptEmail" placeholder="you@thynkh2o.co.za">
-    </div>
     <div class="btn-row" style="margin-top:8px">
-      <button class="btn btn-primary" onclick="genSummaryReport()">Generate &amp; email daily summary</button>
+      <button class="btn btn-primary" onclick="genSummaryReport()">Download Excel daily summary</button>
     </div>
+    <p style="font-size:11px;color:var(--dkgrey);margin-top:8px">Opens in Excel. Attach to email manually.</p>
   </div>
 </div>
 
@@ -1066,8 +1063,8 @@ function submitJob() {
     alert('Storage nearly full — job saved without photos. Clear old jobs to free space.');
   }
   updateBadge();
-  sendMeterEmail(job);
-  if (confirm(`Installation saved!\n\nYour email app will open with the report for ${job.position || job.siteName}.\n\nStart another installation?`)) {
+  downloadWordReport(job);
+  if (confirm(`Installation saved!\n\nThe Word report has downloaded to your phone.\nOpen your Files app, find the .doc file, then attach it to an email.\n\nStart another installation?`)) {
     resetForm();
   } else {
     switchView('jobs');
@@ -1101,21 +1098,13 @@ function renderJobs() {
         </div>
       </div>
       <div class="job-btns">
-        ${j.status!=='sent'?`<button class="jbtn s" onclick="emailJob('${j.id}')">Email</button>`:''}
+        ${<button class="jbtn s" onclick="emailJob('${j.id}')">Download</button>
         <button class="jbtn d" onclick="delJob('${j.id}')">Del</button>
       </div>
     </div>`).join('');
 }
 
-function emailJob(id) {
-  const job = getJobs().find(j => j.id === id);
-  if (!job) return;
-  sendMeterEmail(job);
-  const jobs = getJobs().map(j => j.id === id ? {...j, status:'sent'} : j);
-  lss('thynk-jobs', jobs);
-  renderJobs();
-  updateBadge();
-}
+
 
 function delJob(id) {
   if (!confirm('Delete this job? Cannot be undone.')) return;
@@ -1133,140 +1122,364 @@ function updateBadge() {
 
 function trySendPending() { updateBadge(); }
 
-// ── Individual meter email ─────────────────────────────────────────────────
-function sendMeterEmail(job) {
-  const to = job.email || '';
-  const sub = encodeURIComponent(`Thynk H2O Install Report — ${job.position || job.siteName} — ${job.date}`);
-  const photoNote = Object.keys(job.photos || {}).length
-    ? `${Object.keys(job.photos).length} photo(s) captured — saved to device gallery, attach manually.`
-    : 'No photos captured.';
-  const body = encodeURIComponent(
-`THYNK H2O — INDIVIDUAL METER INSTALLATION REPORT
-=================================================
-Date:        ${job.date}
-Technician:  ${job.tech}
-Site:        ${job.siteName}
+// ── Word report (individual meter) ───────────────────────────────────────
+function downloadWordReport(job) {
+  const site = getSites().find(s => s.id === job.siteId) || {};
+  const photoSlots = [
+    {id:'nf',  label:'New meter — serial number face'},
+    {id:'ni',  label:'New meter — installed position'},
+    {id:'of',  label:'Old meter — serial number face'},
+    {id:'or2', label:'Old meter — final reading'},
+    {id:'site',label:'Site overview'},
+    {id:'issue',label:'Issues / notes'},
+  ];
 
-PROPERTY
-Position:    ${job.position || '—'}
-Account No:  ${job.account || 'N/A'}
-Phase:       ${job.phase || '—'}
-Device Type: ${job.dtype}
-Install Type:${job.itype === 'newbuild' ? 'NEW BUILD (first installation)' : 'REPLACEMENT'}
+  const photoRows = photoSlots
+    .filter(s => job.photos && job.photos[s.id])
+    .map(s => `
+      <tr>
+        <td style="padding:8px 0 4px;font-size:11pt;color:#5D6D7E;font-weight:bold;border-bottom:1px solid #F2F5F7">${s.label}</td>
+      </tr>
+      <tr>
+        <td style="padding:4px 0 14px">
+          <img src="${job.photos[s.id]}" style="max-width:400px;max-height:300px;border-radius:6px;border:1px solid #BDC3C7" alt="${s.label}">
+        </td>
+      </tr>`).join('');
 
-GPS COORDINATES
-Latitude:    ${job.lat || 'NOT CAPTURED — REQUIRED'}
-Longitude:   ${job.lon || 'NOT CAPTURED — REQUIRED'}
+  const noPhotos = photoSlots.filter(s => job.photos && job.photos[s.id]).length === 0;
 
-NEW METER
-Serial No:   ${job.newSerial}
-Opening Reading: ${job.newReading}
-Parent Meter: ${job.parent || 'UNKNOWN — CONFIRM IN OFFICE'}
+  const signalColor = !job.signal ? '#5D6D7E'
+    : parseInt(job.signal) <= 96  ? '#27AE60'
+    : parseInt(job.signal) <= 105 ? '#E67E22'
+    : '#C0392B';
 
-OLD METER
-Serial No:   ${job.oldSerial || 'N/A'}
-Final Reading:${job.oldReading || 'N/A'}
+  const html = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="UTF-8">
+<!--[if gte mso 9]>
+<xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml>
+<![endif]-->
+<style>
+  body { font-family: Arial, sans-serif; font-size: 11pt; color: #1A1A1A; margin: 2cm; }
+  h1   { font-size: 20pt; color: #0D2137; margin: 0 0 4px; }
+  h2   { font-size: 13pt; color: #1B6B8A; margin: 20px 0 8px; border-bottom: 2px solid #1B6B8A; padding-bottom: 4px; }
+  h3   { font-size: 11pt; color: #5D6D7E; font-weight: bold; margin: 14px 0 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  .hdr  { background: #0D2137; color: white; padding: 16px 20px 12px; margin: -2cm -2cm 20px; }
+  .sub  { color: #D0E8F0; font-size: 12pt; margin: 4px 0 0; }
+  .row  { display: flex; gap: 0; border-bottom: 1px solid #F2F5F7; }
+  td.lbl { font-size: 10pt; color: #5D6D7E; font-weight: bold; text-transform: uppercase;
+           letter-spacing: 0.4px; width: 38%; padding: 7px 10px 7px 0; vertical-align: top; }
+  td.val { font-size: 11pt; color: #1A1A1A; padding: 7px 0; vertical-align: top; }
+  .tag   { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10pt; font-weight: bold; }
+  .tag-green  { background: #D5F5E3; color: #27AE60; }
+  .tag-amber  { background: #FDEBD0; color: #E67E22; }
+  .tag-red    { background: #FADADD; color: #C0392B; }
+  .tag-teal   { background: #D0E8F0; color: #1B6B8A; }
+  .warn { color: #C0392B; font-weight: bold; }
+  .footer { margin-top: 30px; border-top: 1px solid #BDC3C7; padding-top: 10px;
+            font-size: 9pt; color: #BDC3C7; text-align: center; }
+</style>
+</head>
+<body>
 
-SYSTEM & ALLOCATION
-System:      ${job.stype}
-MUC Serial:  ${job.muc || 'Pending survey'}
-Signal (dBm):${job.signal || 'Not measured'}
-Alloc Status:${job.allocStatus || 'PENDING SURVEY'}
+<div class="hdr">
+  <h1>Thynk H&#8322;O</h1>
+  <p class="sub">Meter Installation Report &mdash; ${job.date}</p>
+</div>
 
-NOTES
-${job.notes || 'None'}
+<h2>Site &amp; Property</h2>
+<table>
+  <tr><td class="lbl">Estate</td><td class="val">${job.siteName || '&mdash;'}</td></tr>
+  <tr><td class="lbl">Position / unit</td><td class="val">${job.position || '&mdash;'}</td></tr>
+  <tr><td class="lbl">Account number</td><td class="val">${job.account || '&mdash;'}</td></tr>
+  <tr><td class="lbl">Phase</td><td class="val">${job.phase || '&mdash;'}</td></tr>
+  <tr><td class="lbl">Device type</td><td class="val"><span class="tag tag-teal">${job.dtype || 'WATER METER'}</span></td></tr>
+  <tr><td class="lbl">Installation type</td><td class="val">${job.itype === 'newbuild' ? 'New build (no old meter)' : 'Replacement'}</td></tr>
+  <tr><td class="lbl">Technician</td><td class="val">${job.tech || '&mdash;'}</td></tr>
+  <tr><td class="lbl">Date</td><td class="val">${job.date || '&mdash;'}</td></tr>
+</table>
 
-PHOTOS
-${photoNote}
+<h2>GPS Coordinates</h2>
+<table>
+  <tr><td class="lbl">Latitude</td><td class="val ${!job.lat ? 'warn' : ''}">${job.lat || 'NOT CAPTURED &mdash; REQUIRED'}</td></tr>
+  <tr><td class="lbl">Longitude</td><td class="val ${!job.lon ? 'warn' : ''}">${job.lon || 'NOT CAPTURED &mdash; REQUIRED'}</td></tr>
+</table>
 
-================================================
-WORKBOOK ENTRY — copy values below into Sheet 2:
-================================================
-Position Name:    ${job.position || ''}
-Account No:       ${job.account || ''}
-Device Type:      ${job.dtype}
-New Serial No:    ${job.newSerial}
-New Reading:      ${job.newReading}
-Old Serial No:    ${job.oldSerial || 'N/A'}
-Old Reading:      ${job.oldReading || 'N/A'}
-Parent Meter:     ${job.parent || 'UNKNOWN — CONFIRM IN OFFICE'}
-Latitude:         ${job.lat || 'ESTIMATED'}
-Longitude:        ${job.lon || 'ESTIMATED'}
-Phase:            ${job.phase || ''}
-MUC Allocated:    ${job.muc || ''}
-Signal dBm:       ${job.signal || ''}
-Allocation Status:${job.allocStatus || 'PENDING SURVEY'}
-`);
-  window.location.href = `mailto:${to}?subject=${sub}&body=${body}`;
+<h2>New Meter</h2>
+<table>
+  <tr><td class="lbl">Serial number</td><td class="val"><strong>${job.newSerial || '&mdash;'}</strong></td></tr>
+  <tr><td class="lbl">Opening reading</td><td class="val">${job.newReading || '0'}</td></tr>
+  <tr><td class="lbl">Parent meter (zone)</td><td class="val">${job.parent || '<span class="warn">UNKNOWN &mdash; CONFIRM IN OFFICE</span>'}</td></tr>
+</table>
+
+${job.itype !== 'newbuild' ? `
+<h2>Old Meter</h2>
+<table>
+  <tr><td class="lbl">Serial number</td><td class="val"><strong>${job.oldSerial || '&mdash;'}</strong></td></tr>
+  <tr><td class="lbl">Final reading</td><td class="val">${job.oldReading || '&mdash;'}</td></tr>
+</table>` : `
+<h2>Old Meter</h2>
+<p style="color:#5D6D7E;font-style:italic">New build &mdash; no previous meter installed.</p>`}
+
+<h2>System &amp; MUC Allocation</h2>
+<table>
+  <tr><td class="lbl">System</td><td class="val">${job.stype || '&mdash;'}</td></tr>
+  <tr><td class="lbl">MUC serial</td><td class="val">${job.muc || 'Pending signal survey'}</td></tr>
+  <tr><td class="lbl">Signal strength</td><td class="val" style="color:${signalColor}">${job.signal ? job.signal + ' dBm' : '&mdash;'}</td></tr>
+  <tr><td class="lbl">Allocation status</td><td class="val">
+    <span class="tag ${job.allocStatus === 'ALLOCATED' ? 'tag-green' : job.allocStatus === 'NOT VISIBLE' ? 'tag-red' : 'tag-amber'}">
+      ${job.allocStatus || 'PENDING SURVEY'}
+    </span>
+  </td></tr>
+</table>
+
+${job.notes ? `<h2>Notes</h2><p style="font-size:11pt">${job.notes}</p>` : ''}
+
+<h2>Workbook Entry</h2>
+<p style="font-size:9pt;color:#5D6D7E;margin-bottom:8px">Copy these values into Sheet 2 of the Master Workbook.</p>
+<table style="border:1px solid #BDC3C7;border-collapse:collapse">
+  ${[
+    ['Position Name',    job.position || ''],
+    ['Account No.',      job.account  || ''],
+    ['Device Type',      job.dtype    || 'WATER METER'],
+    ['New Serial No.',   job.newSerial|| ''],
+    ['New Reading',      job.newReading|| '0'],
+    ['Old Serial No.',   job.oldSerial|| 'N/A'],
+    ['Old Reading',      job.oldReading|| 'N/A'],
+    ['Parent Meter',     job.parent   || 'UNKNOWN — CONFIRM IN OFFICE'],
+    ['Latitude',         job.lat      || 'ESTIMATED'],
+    ['Longitude',        job.lon      || 'ESTIMATED'],
+    ['Phase',            job.phase    || ''],
+    ['MUC Allocated',    job.muc      || ''],
+    ['Signal (dBm)',     job.signal   || ''],
+    ['Allocation Status',job.allocStatus || 'PENDING SURVEY'],
+  ].map(([k,v]) => `<tr>
+    <td style="border:1px solid #BDC3C7;padding:5px 8px;background:#F2F5F7;font-size:10pt;font-weight:bold;color:#5D6D7E;width:38%">${k}</td>
+    <td style="border:1px solid #BDC3C7;padding:5px 8px;font-size:10pt">${v}</td>
+  </tr>`).join('')}
+</table>
+
+<h2>Photos</h2>
+${noPhotos
+  ? '<p style="color:#5D6D7E;font-style:italic">No photos captured for this installation.</p>'
+  : `<table>${photoRows}</table>`
 }
 
-// ── Daily summary report ───────────────────────────────────────────────────
+<div class="footer">
+  Thynk H&#8322;O &mdash; Meter Installation Report &mdash; Generated ${new Date().toLocaleString('en-ZA')}
+</div>
+
+</body>
+</html>`;
+
+  const blob = new Blob([html], {type: 'application/msword'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const fname = `ThynkH2O_${(job.position || job.siteName || 'Install').replace(/[^A-Z0-9]/gi,'_')}_${job.date}.doc`;
+  a.href = url;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ── Re-download word report for a saved job ────────────────────────────────
+function emailJob(id) {
+  const job = getJobs().find(j => j.id === id);
+  if (!job) return;
+  downloadWordReport(job);
+  const jobs = getJobs().map(j => j.id === id ? {...j, status:'sent'} : j);
+  lss('thynk-jobs', jobs);
+  renderJobs();
+  updateBadge();
+}
+
+// ── Daily summary — Excel (.xls via HTML table) ────────────────────────────
 function genSummaryReport() {
   const siteId = document.getElementById('rptSite').value;
   const date   = document.getElementById('rptDate').value;
-  const email  = document.getElementById('rptEmail').value.trim();
   if (!siteId) { alert('Select a site.'); return; }
   if (!date)   { alert('Select a date.'); return; }
 
   const site = getSites().find(s => s.id === siteId);
-  const jobs = getJobs().filter(j => j.siteId === siteId && j.date === date && j.status !== 'draft');
+  const jobs  = getJobs().filter(j => j.siteId === siteId && j.date === date && j.status !== 'draft');
 
   if (!jobs.length) {
     alert(`No submitted installations found for ${site ? site.name : 'this site'} on ${date}.`);
     return;
   }
 
-  const techs = [...new Set(jobs.map(j => j.tech).filter(Boolean))].join(', ');
-  const newBuild   = jobs.filter(j => j.itype === 'newbuild').length;
-  const replacements = jobs.filter(j => j.itype === 'replacement').length;
-  const allocated  = jobs.filter(j => j.allocStatus === 'ALLOCATED').length;
-  const pending    = jobs.filter(j => j.allocStatus === 'PENDING SURVEY').length;
-  const noGPS      = jobs.filter(j => !j.lat || !j.lon).length;
-  const noPhotos   = jobs.filter(j => !j.photos || Object.keys(j.photos).length === 0).length;
+  const techs       = [...new Set(jobs.map(j => j.tech).filter(Boolean))].join(', ');
+  const replacements= jobs.filter(j => j.itype === 'replacement').length;
+  const newBuilds   = jobs.filter(j => j.itype === 'newbuild').length;
+  const allocated   = jobs.filter(j => j.allocStatus === 'ALLOCATED').length;
+  const pendingSurvey = jobs.filter(j => j.allocStatus === 'PENDING SURVEY').length;
+  const noGPS       = jobs.filter(j => !j.lat || !j.lon).length;
+  const noPhotos    = jobs.filter(j => !j.photos || Object.keys(j.photos).length === 0).length;
+  const noParent    = jobs.filter(j => !j.parent).length;
 
-  const meterLines = jobs.map((j, i) =>
-`${String(i+1).padStart(3)}. ${(j.position||'—').padEnd(28)} Serial: ${(j.newSerial||'—').padEnd(12)} ${j.itype==='newbuild'?'NEW BUILD':'Replacement  '} GPS: ${j.lat?`${j.lat},${j.lon}`:'MISSING  '} MUC: ${j.muc||'Pending'} Signal: ${j.signal?j.signal+'dBm':'—'} Status: ${j.allocStatus||'—'}`
-  ).join('\n');
+  const HDR  = 'background:#0D2137;color:white;font-weight:bold;padding:8px 10px;font-size:10pt;border:1px solid #0D2137';
+  const SHDR = 'background:#1B6B8A;color:white;font-weight:bold;padding:8px 10px;font-size:10pt;border:1px solid #1B6B8A';
+  const CELL = 'padding:6px 10px;font-size:10pt;border:1px solid #BDC3C7;vertical-align:top';
+  const CELLA= 'padding:6px 10px;font-size:10pt;border:1px solid #BDC3C7;background:#F2F5F7;vertical-align:top';
+  const WARN = 'padding:6px 10px;font-size:10pt;border:1px solid #BDC3C7;background:#FADADD;color:#C0392B;font-weight:bold';
+  const OK   = 'padding:6px 10px;font-size:10pt;border:1px solid #BDC3C7;background:#D5F5E3;color:#27AE60;font-weight:bold';
 
-  const sub = encodeURIComponent(`Thynk H2O DAILY SUMMARY — ${site ? site.name : ''} — ${date}`);
-  const body = encodeURIComponent(
-`THYNK H2O — DAILY SITE INSTALLATION SUMMARY
-============================================
-Site:          ${site ? site.name : ''}
-Date:          ${date}
-Technicians:   ${techs}
-Report by:     Office
+  const actionItems = [];
+  if (noGPS    > 0) actionItems.push(`${noGPS} meter(s) missing GPS coordinates — confirm before workbook entry`);
+  if (noParent > 0) actionItems.push(`${noParent} meter(s) missing parent meter — confirm zone allocation`);
+  if (pendingSurvey > 0) actionItems.push(`${pendingSurvey} meter(s) pending MUC signal survey`);
+  if (noPhotos > 0) actionItems.push(`${noPhotos} meter(s) have no photos captured`);
 
-TOTALS
-Total meters installed:  ${jobs.length}
-  — Replacements:        ${replacements}
-  — New builds:          ${newBuild}
-Allocated to MUC:        ${allocated} of ${jobs.length}
-Pending signal survey:   ${pending}
-Missing GPS:             ${noGPS}${noGPS > 0 ? ' ← ACTION REQUIRED' : ''}
-Missing photos:          ${noPhotos}
+  const xls = `
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:x="urn:schemas-microsoft-com:office:excel"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="UTF-8">
+<!--[if gte mso 9]><xml>
+  <x:ExcelWorkbook><x:ExcelWorksheets>
+    <x:ExcelWorksheet><x:Name>Summary</x:Name>
+      <x:WorksheetOptions><x:Selected/></x:WorksheetOptions>
+    </x:ExcelWorksheet>
+  </x:ExcelWorksheets></x:ExcelWorkbook>
+</xml><![endif]-->
+<style>
+  body { font-family: Arial, sans-serif; }
+  td, th { mso-number-format: "@"; }
+</style>
+</head>
+<body>
 
-METER DETAIL
-${'No.  Position                     Serial       Type           GPS                      MUC       Signal  Status'}
-${'---  ---------------------------  -----------  -------------  -----------------------  --------  ------  -----------'}
-${meterLines}
+<table style="border-collapse:collapse;width:100%;margin-bottom:20px">
+  <tr><td colspan="4" style="background:#0D2137;color:white;font-size:16pt;font-weight:bold;padding:12px 14px;border:none">
+    Thynk H&#8322;O &mdash; Daily Installation Summary
+  </td></tr>
+  <tr>
+    <td style="${CELLA}font-weight:bold">Site</td>
+    <td style="${CELL}" colspan="3">${site ? site.name : ''}</td>
+  </tr>
+  <tr>
+    <td style="${CELLA}font-weight:bold">Date</td>
+    <td style="${CELL}" colspan="3">${date}</td>
+  </tr>
+  <tr>
+    <td style="${CELLA}font-weight:bold">Technicians</td>
+    <td style="${CELL}" colspan="3">${techs}</td>
+  </tr>
+</table>
 
-============================================
-ACTION ITEMS
-${noGPS > 0 ? `• ${noGPS} meter(s) have no GPS coordinates — confirm before workbook entry.\n` : ''}${pending > 0 ? `• ${pending} meter(s) still pending MUC signal survey.\n` : ''}${noPhotos > 0 ? `• ${noPhotos} meter(s) have no photos — follow up with technicians.\n` : ''}${(noGPS + pending + noPhotos) === 0 ? '• All installations complete — ready for workbook entry.' : ''}
-============================================
-WORKBOOK ENTRY SUMMARY
-(Copy each row below into Sheet 2 of the Master Workbook)
+<table style="border-collapse:collapse;margin-bottom:20px">
+  <tr>
+    <th style="${SHDR}">Total installed</th>
+    <th style="${SHDR}">Replacements</th>
+    <th style="${SHDR}">New builds</th>
+    <th style="${SHDR}">Allocated to MUC</th>
+    <th style="${SHDR}">Pending survey</th>
+    <th style="${SHDR}">Missing GPS</th>
+    <th style="${SHDR}">Missing parent</th>
+    <th style="${SHDR}">Missing photos</th>
+  </tr>
+  <tr>
+    <td style="${CELL}text-align:center;font-size:14pt;font-weight:bold">${jobs.length}</td>
+    <td style="${CELL}text-align:center">${replacements}</td>
+    <td style="${CELL}text-align:center">${newBuilds}</td>
+    <td style="${allocated===jobs.length?OK:CELL}text-align:center">${allocated} / ${jobs.length}</td>
+    <td style="${pendingSurvey>0?WARN:OK}text-align:center">${pendingSurvey}</td>
+    <td style="${noGPS>0?WARN:OK}text-align:center">${noGPS}</td>
+    <td style="${noParent>0?WARN:OK}text-align:center">${noParent}</td>
+    <td style="${noPhotos>0?WARN:OK}text-align:center">${noPhotos}</td>
+  </tr>
+</table>
 
-Position Name | Account | Device Type | New Serial | New Reading | Old Serial | Old Reading | Parent | Latitude | Longitude | Phase | MUC | Signal | Status
-${jobs.map(j => [
-  j.position||'', j.account||'', j.dtype||'WATER METER', j.newSerial||'',
-  j.newReading||'', j.oldSerial||'N/A', j.oldReading||'N/A', j.parent||'',
-  j.lat||'ESTIMATED', j.lon||'ESTIMATED', j.phase||'', j.muc||'',
-  j.signal||'', j.allocStatus||'PENDING SURVEY'
-].join(' | ')).join('\n')}
-`);
-  window.location.href = `mailto:${email}?subject=${sub}&body=${body}`;
+${actionItems.length ? `
+<table style="border-collapse:collapse;margin-bottom:20px;width:60%">
+  <tr><th colspan="2" style="${SHDR}background:#C0392B;border-color:#C0392B">Action items required</th></tr>
+  ${actionItems.map((item,i) => `<tr>
+    <td style="padding:5px 10px;border:1px solid #BDC3C7;color:#C0392B;font-weight:bold;width:24px">${i+1}</td>
+    <td style="padding:5px 10px;border:1px solid #BDC3C7">${item}</td>
+  </tr>`).join('')}
+</table>` : `
+<table style="border-collapse:collapse;margin-bottom:20px;width:60%">
+  <tr><td style="padding:8px 12px;border:1px solid #BDC3C7;background:#D5F5E3;color:#27AE60;font-weight:bold">
+    &#10003; All installations complete &mdash; ready for workbook entry
+  </td></tr>
+</table>`}
+
+<table style="border-collapse:collapse;width:100%">
+  <tr>
+    <th style="${HDR}">No.</th>
+    <th style="${HDR}">Position / Unit</th>
+    <th style="${HDR}">Account No.</th>
+    <th style="${HDR}">Device Type</th>
+    <th style="${HDR}">Type</th>
+    <th style="${HDR}">New Serial</th>
+    <th style="${HDR}">New Reading</th>
+    <th style="${HDR}">Old Serial</th>
+    <th style="${HDR}">Old Reading</th>
+    <th style="${HDR}">Parent Meter</th>
+    <th style="${HDR}">Latitude</th>
+    <th style="${HDR}">Longitude</th>
+    <th style="${HDR}">Phase</th>
+    <th style="${HDR}">System</th>
+    <th style="${HDR}">MUC</th>
+    <th style="${HDR}">Signal dBm</th>
+    <th style="${HDR}">Alloc. Status</th>
+    <th style="${HDR}">Technician</th>
+    <th style="${HDR}">Notes</th>
+  </tr>
+  ${jobs.map((j,i) => {
+    const alt  = i % 2 === 0;
+    const base = alt ? CELLA : CELL;
+    const gpsOk = j.lat && j.lon;
+    const parOk = !!j.parent;
+    return `<tr>
+      <td style="${base}text-align:center">${i+1}</td>
+      <td style="${base}font-weight:bold">${j.position || '&mdash;'}</td>
+      <td style="${base}">${j.account || '&mdash;'}</td>
+      <td style="${base}">${j.dtype || 'WATER METER'}</td>
+      <td style="${base}">${j.itype === 'newbuild' ? 'New build' : 'Replacement'}</td>
+      <td style="${base}font-weight:bold">${j.newSerial || '&mdash;'}</td>
+      <td style="${base}text-align:right">${j.newReading || '0'}</td>
+      <td style="${base}">${j.oldSerial || 'N/A'}</td>
+      <td style="${base}text-align:right">${j.oldReading || 'N/A'}</td>
+      <td style="${parOk ? base : WARN}">${j.parent || 'UNKNOWN'}</td>
+      <td style="${gpsOk ? base : WARN}">${j.lat || 'MISSING'}</td>
+      <td style="${gpsOk ? base : WARN}">${j.lon || 'MISSING'}</td>
+      <td style="${base}">${j.phase || '&mdash;'}</td>
+      <td style="${base}">${j.stype || '&mdash;'}</td>
+      <td style="${base}">${j.muc || 'Pending'}</td>
+      <td style="${base}${j.signal ? ';color:' + (parseInt(j.signal)<=96?'#27AE60':parseInt(j.signal)<=105?'#E67E22':'#C0392B') : ''}">
+        ${j.signal || '&mdash;'}
+      </td>
+      <td style="${j.allocStatus==='ALLOCATED'?OK:j.allocStatus==='NOT VISIBLE'?WARN:base}">${j.allocStatus || 'PENDING SURVEY'}</td>
+      <td style="${base}">${j.tech || '&mdash;'}</td>
+      <td style="${base}">${j.notes || '&mdash;'}</td>
+    </tr>`;
+  }).join('')}
+</table>
+
+<p style="font-size:9pt;color:#BDC3C7;margin-top:16px;text-align:center">
+  Thynk H&#8322;O &mdash; Daily Summary &mdash; Generated ${new Date().toLocaleString('en-ZA')}
+</p>
+
+</body></html>`;
+
+  const blob = new Blob([xls], {type:'application/vnd.ms-excel'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = `ThynkH2O_Summary_${(site ? site.name : 'Site').replace(/[^A-Z0-9]/gi,'_')}_${date}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  alert(`Daily summary downloaded.\nOpen your Files app, find the .xls file, and attach it to your email.`);
 }
 
 // ── Review ─────────────────────────────────────────────────────────────────
