@@ -465,6 +465,19 @@ input[type=file]{display:none}
   <div id="siteList"></div>
 
   <div class="divider"></div>
+  <div class="section-label">Data backup &amp; restore</div>
+  <div class="card" style="border-left:4px solid var(--teal);padding-left:18px">
+    <p style="font-size:13px;color:var(--dkgrey);margin-bottom:12px">
+      Your site setups and saved jobs are stored on this device. Back up regularly so updates to the app never lose your data.
+    </p>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="backupData()">⬇ Download backup</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('restoreFile').click()">⬆ Restore backup</button>
+    </div>
+    <input type="file" id="restoreFile" accept=".json" onchange="restoreData(this)" style="display:none">
+  </div>
+
+  <div class="divider"></div>
   <div class="section-label">Daily summary report</div>
   <div class="card">
     <div class="field">
@@ -550,6 +563,20 @@ input[type=file]{display:none}
       <label>Default report email</label>
       <input type="email" id="sm-email" placeholder="you@thynkh2o.co.za">
     </div>
+    <div class="row2">
+      <div class="field">
+        <label>Site latitude</label>
+        <input type="number" id="sm-lat" placeholder="-29.4697" step="0.000001">
+        <div class="hint">Estate centre point</div>
+      </div>
+      <div class="field">
+        <label>Site longitude</label>
+        <input type="number" id="sm-lon" placeholder="30.2385" step="0.000001">
+      </div>
+    </div>
+    <button class="gps-btn" id="siteGpsBtn" onclick="captureSiteGPS()" style="margin-bottom:4px">
+      📍 Use my current location for site GPS
+    </button>
 
     <div class="section-label">Parent meters (zones)</div>
     <div id="pmList" style="margin-bottom:8px"></div>
@@ -847,6 +874,10 @@ function openSiteModal(id) {
   document.getElementById('sm-phase').value   = site ? site.phase   : '';
   document.getElementById('sm-sys').value     = site ? site.sys     : 'OMNIA';
   document.getElementById('sm-email').value   = site ? site.email   : '';
+  document.getElementById('sm-lat').value     = site ? (site.lat || '') : '';
+  document.getElementById('sm-lon').value     = site ? (site.lon || '') : '';
+  const sgb = document.getElementById('siteGpsBtn');
+  if (sgb) { sgb.textContent = '📍 Use my current location for site GPS'; sgb.className='gps-btn'; sgb.disabled=false; }
 
   if (site) {
     tmpPMs    = [...(site.pms    || [])];
@@ -858,6 +889,27 @@ function openSiteModal(id) {
 }
 
 function closeSiteModal() { document.getElementById('siteModal').classList.remove('open'); }
+
+function captureSiteGPS() {
+  const btn = document.getElementById('siteGpsBtn');
+  btn.textContent = '⏳ Getting location...';
+  btn.disabled = true;
+  if (!navigator.geolocation) {
+    btn.textContent = '📍 GPS not available — enter manually';
+    btn.disabled = false; return;
+  }
+  navigator.geolocation.getCurrentPosition(pos => {
+    document.getElementById('sm-lat').value = pos.coords.latitude.toFixed(6);
+    document.getElementById('sm-lon').value = pos.coords.longitude.toFixed(6);
+    btn.textContent = '✅ Site GPS captured';
+    btn.className = 'gps-btn ok';
+    btn.disabled = false;
+  }, () => {
+    btn.textContent = '📍 Could not get location — enter manually';
+    btn.className = 'gps-btn';
+    btn.disabled = false;
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+}
 
 function renderModalLists() {
   document.getElementById('pmList').innerHTML = tmpPMs.map((pm, i) =>
@@ -914,6 +966,8 @@ function saveSite() {
     phase:   document.getElementById('sm-phase').value,
     sys:     document.getElementById('sm-sys').value,
     email:   document.getElementById('sm-email').value.trim(),
+    lat:     document.getElementById('sm-lat').value.trim(),
+    lon:     document.getElementById('sm-lon').value.trim(),
     pms:     [...tmpPMs],
     mucs:    [...tmpMUCs],
     techs:   [...tmpTechs],
@@ -969,7 +1023,7 @@ function renderSitePicker() {
   el.innerHTML = sites.map(s => `
     <div class="site-card ${activeSiteId === s.id ? 'active' : ''}" onclick="selectSite('${s.id}')">
       <div class="site-name">${s.name}</div>
-      <div class="site-meta"><span>${s.phase || ''}</span><span>${s.pms.length} zones · ${s.mucs.length} MUCs</span></div>
+      <div class="site-meta"><span>${s.phase || ''}</span><span>${s.pms.length} zones · ${s.mucs.length} MUCs</span>${s.lat ? `<span>📍 ${s.lat}, ${s.lon}</span>` : '<span style="color:var(--amber)">⚠ No site GPS</span>'}</div>
     </div>`).join('');
 }
 
@@ -1098,7 +1152,7 @@ function renderJobs() {
         </div>
       </div>
       <div class="job-btns">
-        ${<button class="jbtn s" onclick="emailJob('${j.id}')">Download</button>
+        <button class="jbtn s" onclick="emailJob('${j.id}')">Download</button>
         <button class="jbtn d" onclick="delJob('${j.id}')">Del</button>
       </div>
     </div>`).join('');
@@ -1182,8 +1236,8 @@ function downloadWordReport(job) {
   .warn { color: #C0392B; font-weight: bold; }
   .footer { margin-top: 30px; border-top: 1px solid #BDC3C7; padding-top: 10px;
             font-size: 9pt; color: #BDC3C7; text-align: center; }
-</style>
-</head>
+</' + 'style>
+</' + 'head>
 <body>
 
 <div class="hdr">
@@ -1273,8 +1327,8 @@ ${noPhotos
   Thynk H&#8322;O &mdash; Meter Installation Report &mdash; Generated ${new Date().toLocaleString('en-ZA')}
 </div>
 
-</body>
-</html>`;
+</' + 'body>
+</' + 'html>`;
 
   const blob = new Blob([html], {type: 'application/msword'});
   const url  = URL.createObjectURL(blob);
@@ -1352,8 +1406,8 @@ function genSummaryReport() {
 <style>
   body { font-family: Arial, sans-serif; }
   td, th { mso-number-format: "@"; }
-</style>
-</head>
+</' + 'style>
+</' + 'head>
 <body>
 
 <table style="border-collapse:collapse;width:100%;margin-bottom:20px">
@@ -1468,7 +1522,7 @@ ${actionItems.length ? `
   Thynk H&#8322;O &mdash; Daily Summary &mdash; Generated ${new Date().toLocaleString('en-ZA')}
 </p>
 
-</body></html>`;
+</' + 'body></' + 'html>`;
 
   const blob = new Blob([xls], {type:'application/vnd.ms-excel'});
   const url  = URL.createObjectURL(blob);
@@ -1516,6 +1570,73 @@ function buildReview() {
   slots.forEach(s => { if (pics[s]) { pa.innerHTML += `<img src="${pics[s]}"`+` alt="photo">`; cnt++; } });
   if (!cnt) pa.innerHTML = '<p style="font-size:12px;color:var(--dkgrey)">No photos captured yet</p>';
   document.getElementById('reviewPhotoCount').textContent = `${cnt} photo${cnt!==1?'s':''} attached`;
+}
+
+// ── Backup & restore ──────────────────────────────────────────────────────
+function backupData() {
+  const data = {
+    version:  '1.0',
+    exported: new Date().toISOString(),
+    sites:    lsj('thynk-sites'),
+    jobs:     lsj('thynk-jobs'),
+    techName: ls('thynk-tech') || '',
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `ThynkH2O_Backup_${today()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  alert('Backup downloaded. Save it somewhere safe — Google Drive, email it to yourself, etc.');
+}
+
+function restoreData(input) {
+  if (!input.files || !input.files[0]) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.sites && !data.jobs) {
+        alert('This does not look like a valid Thynk H2O backup file.'); return;
+      }
+      const existingSites = lsj('thynk-sites').length;
+      const existingJobs  = lsj('thynk-jobs').length;
+      if (!confirm(
+        `Restore backup from ${data.exported ? data.exported.split('T')[0] : 'unknown date'}?\n\n` +
+        `This will ADD to your existing data (not replace it).\n` +
+        `Current: ${existingSites} sites, ${existingJobs} jobs.\n` +
+        `Backup:  ${(data.sites||[]).length} sites, ${(data.jobs||[]).length} jobs.`
+      )) return;
+
+      // Merge sites — don't duplicate by id
+      const curSites  = lsj('thynk-sites');
+      const curIds    = new Set(curSites.map(s => s.id));
+      const newSites  = (data.sites || []).filter(s => !curIds.has(s.id));
+      lss('thynk-sites', [...curSites, ...newSites]);
+
+      // Merge jobs — don't duplicate by id
+      const curJobs   = lsj('thynk-jobs');
+      const curJobIds = new Set(curJobs.map(j => j.id));
+      const newJobs   = (data.jobs || []).filter(j => !curJobIds.has(j.id));
+      lss('thynk-jobs', [...curJobs, ...newJobs]);
+
+      if (data.techName && !ls('thynk-tech')) lss('thynk-tech', data.techName);
+
+      renderSiteList();
+      renderSitePicker();
+      renderJobs();
+      updateBadge();
+      populateRptSelect();
+      alert(`Restore complete.\nAdded ${newSites.length} site(s) and ${newJobs.length} job(s).`);
+    } catch(err) {
+      alert('Could not read backup file. Make sure it is a valid .json backup from this app.');
+    }
+  };
+  reader.readAsText(input.files[0]);
+  input.value = '';
 }
 
 // ── Reset ──────────────────────────────────────────────────────────────────
