@@ -217,14 +217,15 @@ const TASKS = {
 
 const AMR_ASSET_TYPES = ["MUC", "Repeater"];
 
-const AMR_SCREENSHOT_PROMPT = `This is a screenshot from a Kamstrup handheld reader showing a list of water meters detected by a MUC or repeater. Extract EVERY meter row visible. Respond with ONLY a JSON object, no other text, in this exact shape:
-{"concentratorId": string|null, "meters": [{"serial": string, "model": string|null, "signal": string|null}]}
+const AMR_SCREENSHOT_PROMPT = `This is a screenshot from a Kamstrup handheld reader showing a list of water meters detected by a MUC, concentrator, or repeater. Read EVERY meter row visible in the list, top to bottom, including partially visible rows at the edges if legible. Respond with ONLY a JSON object, no other text, in this exact shape:
+{"concentratorId": string|null, "readingDate": string|null, "meters": [{"serial": string, "model": string|null, "signal": string|null}]}
 Rules:
-- "serial": the full meter serial as shown (e.g. "KAM 24336621"). Include the prefix.
-- "model": the model line beneath the serial (e.g. "MULTICAL 21", "KWMx230"), else null.
-- "signal": the signal strength as shown (e.g. "-40 dBm"), else null.
-- "concentratorId": any concentrator/gateway ID shown at the top of the screen, else null.
-- List every row you can read, in the order shown. Do not invent rows or guess partially hidden values.`;
+- "serial": the full meter serial exactly as shown including any prefix (e.g. "KAM 24336621", "KAW 54316243").
+- "model": the model name on the line beneath the serial (e.g. "MULTICAL 21", "KWMx230"), else null.
+- "signal": the signal strength exactly as shown including units (e.g. "-40 dBm"), else null.
+- "concentratorId": any concentrator, gateway, or device ID shown at the top of the screen, else null.
+- "readingDate": any date or timestamp visible on the screen, else null.
+- Return every row — a typical screen shows 8 to 10 meters. Do not stop early, do not summarise, do not invent rows.`;
 
 /* ---------- meter dial (signature element) ---------- */
 function MeterDial({ value, size = 108, stroke = 9, color = C.primary, animate = true }) {
@@ -515,6 +516,7 @@ function exportExcel(survey, captures, reviewer) {
           "Meter Serial": m.serial || "",
           "Meter Model": m.model || "",
           "Signal Strength": m.signal || "",
+          "Reading Date": shot.readingDate || c.timestamp.date,
           GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
           Date: c.timestamp.date,
           Technician: c.tech || "",
@@ -526,7 +528,7 @@ function exportExcel(survey, captures, reviewer) {
     const amrWs = XLSX.utils.json_to_sheet(amrRows);
     amrWs["!cols"] = [
       { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
-      { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 14 },
+      { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 14 },
     ];
     XLSX.utils.book_append_sheet(wb, amrWs, "AMR Linked Meters");
   }
@@ -1002,6 +1004,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
             photo,
             meters: extracted.meters || [],
             concentratorId: extracted.concentratorId || null,
+            readingDate: extracted.readingDate || null,
           }];
           return { ...p, amrShots: shots };
         });
@@ -1507,23 +1510,73 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                         {pending.amrShots.map((shot, i) => (
-                          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: 8, borderRadius: 9, background: C.paper }}>
-                            <img src={shot.photo} alt={`Screenshot ${i + 1}`} style={{ width: 40, height: 52, objectFit: "cover", borderRadius: 5, flexShrink: 0 }} />
-                            <div style={{ flex: 1 }}>
-                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoal }}>
-                                {(shot.meters || []).length} meters read
-                              </div>
-                              {shot.concentratorId && (
-                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft }}>
-                                  ID: {shot.concentratorId}
+                          <div key={i} style={{ padding: 9, borderRadius: 9, background: C.paper }}>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                              <img src={shot.photo} alt={`Screenshot ${i + 1}`} style={{ width: 34, height: 44, objectFit: "cover", borderRadius: 5, flexShrink: 0 }} />
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoal }}>
+                                  Screenshot {i + 1} · {(shot.meters || []).length} meters
                                 </div>
-                              )}
+                                {shot.concentratorId && (
+                                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft }}>
+                                    ID: {shot.concentratorId}
+                                  </div>
+                                )}
+                              </div>
+                              <button onClick={() => editField("amrShots", pending.amrShots.filter((_, j) => j !== i))} style={{
+                                border: "none", background: "none", cursor: "pointer", padding: 4
+                              }}>
+                                <X size={13} color={C.charcoalSoft} />
+                              </button>
                             </div>
-                            <button onClick={() => editField("amrShots", pending.amrShots.filter((_, j) => j !== i))} style={{
-                              border: "none", background: "none", cursor: "pointer", padding: 4
-                            }}>
-                              <X size={13} color={C.charcoalSoft} />
-                            </button>
+
+                            {(shot.meters || []).length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 0.8fr 20px", gap: 4, fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 700, color: C.charcoalSoft, padding: "0 2px" }}>
+                                  <span>SERIAL</span><span>MODEL</span><span>SIGNAL</span><span />
+                                </div>
+                                {shot.meters.map((m, mi) => {
+                                  const updateMeter = (patch) => {
+                                    const shots = pending.amrShots.map((s, si) =>
+                                      si !== i ? s : { ...s, meters: s.meters.map((mm, mmi) => (mmi === mi ? { ...mm, ...patch } : mm)) }
+                                    );
+                                    editField("amrShots", shots);
+                                  };
+                                  const removeMeter = () => {
+                                    const shots = pending.amrShots.map((s, si) =>
+                                      si !== i ? s : { ...s, meters: s.meters.filter((_, mmi) => mmi !== mi) }
+                                    );
+                                    editField("amrShots", shots);
+                                  };
+                                  return (
+                                    <div key={mi} style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 0.8fr 20px", gap: 4, alignItems: "center" }}>
+                                      <input value={m.serial || ""} onChange={(e) => updateMeter({ serial: e.target.value })}
+                                        style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoal, background: "#fff" }} />
+                                      <input value={m.model || ""} onChange={(e) => updateMeter({ model: e.target.value })} placeholder="—"
+                                        style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft, background: "#fff" }} />
+                                      <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })} placeholder="—"
+                                        style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft, background: "#fff" }} />
+                                      <button onClick={removeMeter} style={{ border: "none", background: "none", cursor: "pointer", padding: 0, display: "flex", justifyContent: "center" }}>
+                                        <X size={10} color={C.charcoalSoft} />
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                                <button
+                                  onClick={() => {
+                                    const shots = pending.amrShots.map((s, si) =>
+                                      si !== i ? s : { ...s, meters: [...(s.meters || []), { serial: "", model: "", signal: "" }] }
+                                    );
+                                    editField("amrShots", shots);
+                                  }}
+                                  style={{
+                                    border: "none", background: "none", color: C.primary, cursor: "pointer",
+                                    fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600, padding: "3px 0", textAlign: "left"
+                                  }}>
+                                  + Add missing meter
+                                </button>
+                              </div>
+                            )}
                           </div>
                         ))}
                         <div style={{
@@ -2163,7 +2216,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                       style={{ width: 44, height: 58, objectFit: "cover", borderRadius: 6, border: `1px solid ${C.line}` }} />
                   ))}
                 </div>
-                <div style={{ maxHeight: 200, overflowY: "auto", borderRadius: 9, border: `1px solid ${C.line}` }}>
+                <div style={{ maxHeight: 240, overflowY: "auto", borderRadius: 9, border: `1px solid ${C.line}` }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
                     <thead>
                       <tr style={{ background: C.paper }}>
@@ -2173,13 +2226,44 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {selected.amrShots.flatMap((s) => s.meters || []).map((m, i) => (
-                        <tr key={i} style={{ borderTop: `1px solid ${C.line}` }}>
-                          <td style={{ padding: "5px 8px", color: C.charcoal, fontWeight: 600 }}>{m.serial}</td>
-                          <td style={{ padding: "5px 8px", color: C.charcoalSoft }}>{m.model || "—"}</td>
-                          <td style={{ padding: "5px 8px", textAlign: "right", color: C.charcoalSoft }}>{m.signal || "—"}</td>
-                        </tr>
-                      ))}
+                      {selected.amrShots.map((shot, si) =>
+                        (shot.meters || []).map((m, mi) => {
+                          const updateMeter = (patch) => {
+                            const shots = selected.amrShots.map((s, i) =>
+                              i !== si ? s : { ...s, meters: s.meters.map((mm, j) => (j === mi ? { ...mm, ...patch } : mm)) }
+                            );
+                            updateCapture(selected.id, { amrShots: shots });
+                          };
+                          return (
+                            <tr key={`${si}-${mi}`} style={{ borderTop: `1px solid ${C.line}` }}>
+                              <td style={{ padding: "4px 6px" }}>
+                                {editMode ? (
+                                  <input value={m.serial || ""} onChange={(e) => updateMeter({ serial: e.target.value })}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal }} />
+                                ) : (
+                                  <span style={{ color: C.charcoal, fontWeight: 600 }}>{m.serial}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "4px 6px" }}>
+                                {editMode ? (
+                                  <input value={m.model || ""} onChange={(e) => updateMeter({ model: e.target.value })}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal }} />
+                                ) : (
+                                  <span style={{ color: C.charcoalSoft }}>{m.model || "—"}</span>
+                                )}
+                              </td>
+                              <td style={{ padding: "4px 6px", textAlign: "right" }}>
+                                {editMode ? (
+                                  <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })}
+                                    style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal, textAlign: "right" }} />
+                                ) : (
+                                  <span style={{ color: C.charcoalSoft }}>{m.signal || "—"}</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
                     </tbody>
                   </table>
                 </div>
