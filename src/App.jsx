@@ -203,7 +203,28 @@ const TASKS = {
     blurb: "Site survey — photos, locations, and notes.",
     icon: MapPin,
   },
+  replacement: {
+    label: "Meter Replacement",
+    blurb: "Record old and new meter photos, serials, and readings at each position.",
+    icon: RotateCcw,
+  },
+  amr: {
+    label: "AMR Survey",
+    blurb: "Map MUCs and repeaters, and record which meters each one can see.",
+    icon: Radio,
+  },
 };
+
+const AMR_ASSET_TYPES = ["MUC", "Repeater"];
+
+const AMR_SCREENSHOT_PROMPT = `This is a screenshot from a Kamstrup handheld reader showing a list of water meters detected by a MUC or repeater. Extract EVERY meter row visible. Respond with ONLY a JSON object, no other text, in this exact shape:
+{"concentratorId": string|null, "meters": [{"serial": string, "model": string|null, "signal": string|null}]}
+Rules:
+- "serial": the full meter serial as shown (e.g. "KAM 24336621"). Include the prefix.
+- "model": the model line beneath the serial (e.g. "MULTICAL 21", "KWMx230"), else null.
+- "signal": the signal strength as shown (e.g. "-40 dBm"), else null.
+- "concentratorId": any concentrator/gateway ID shown at the top of the screen, else null.
+- List every row you can read, in the order shown. Do not invent rows or guess partially hidden values.`;
 
 /* ---------- meter dial (signature element) ---------- */
 function MeterDial({ value, size = 108, stroke = 9, color = C.primary, animate = true }) {
@@ -438,7 +459,7 @@ function safeFilename(name) {
 }
 
 function exportExcel(survey, captures, reviewer) {
-  const TYPE_LABEL = { meter: "Meter Reading", sensor: "Sensor Deployment", fido: "FIDO Feedback", sat: "SAT Survey", consumption: "Consumption Profile" };
+  const TYPE_LABEL = { meter: "Meter Reading", sensor: "Sensor Deployment", fido: "FIDO Feedback", sat: "SAT Survey", replacement: "Meter Replacement", amr: "AMR Survey", consumption: "Consumption Profile" };
   const rows = captures.map((c) => ({
     Site: survey.siteName || "",
     Survey: survey.surveyName || "",
@@ -446,6 +467,13 @@ function exportExcel(survey, captures, reviewer) {
     Type: TYPE_LABEL[c.type] || "Meter Reading",
     "FIDO Session Type": c.fido?.sessionType || "",
     "SAT Notes": c.satNotes || "",
+    "AMR Asset Type": c.amrAssetType || "",
+    "AMR Serial": c.amrSerial || "",
+    "AMR Meters Linked": c.type === "amr" ? (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0) : "",
+    "Old Meter Serial": c.oldMeter?.serial || "",
+    "Old Meter Reading (m³)": c.oldMeter?.reading || "",
+    "New Meter Serial": c.newMeter?.serial || "",
+    "New Meter Reading (m³)": c.newMeter?.reading || "",
     "Meter Reading (m³)": c.reading,
     "Serial Number": c.serial,
     Date: c.timestamp.date,
@@ -472,14 +500,80 @@ function exportExcel(survey, captures, reviewer) {
   ];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Meter Captures");
+
+  // Second sheet: every meter seen by each MUC/repeater, one row per meter
+  const amrRows = [];
+  captures.filter((c) => c.type === "amr").forEach((c) => {
+    (c.amrShots || []).forEach((shot) => {
+      (shot.meters || []).forEach((m) => {
+        amrRows.push({
+          Site: survey.siteName || "",
+          Position: c.position,
+          "Asset Type": c.amrAssetType || "",
+          "Asset Serial": c.amrSerial || "",
+          "Concentrator ID": shot.concentratorId || "",
+          "Meter Serial": m.serial || "",
+          "Meter Model": m.model || "",
+          "Signal Strength": m.signal || "",
+          GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
+          Date: c.timestamp.date,
+          Technician: c.tech || "",
+        });
+      });
+    });
+  });
+  if (amrRows.length) {
+    const amrWs = XLSX.utils.json_to_sheet(amrRows);
+    amrWs["!cols"] = [
+      { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
+      { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 14 },
+    ];
+    XLSX.utils.book_append_sheet(wb, amrWs, "AMR Linked Meters");
+  }
+
   XLSX.writeFile(wb, `${safeFilename(survey.surveyName)}_meter_capture_report.xlsx`);
 }
 
 function printReport(survey, captures, reviewer, counts, pct) {
   const win = window.open("", "_blank", "width=900,height=1000");
   if (!win) return;
-  const TYPE_SHORT = { meter: "Meter", sensor: "Sensor", fido: "FIDO", sat: "SAT", consumption: "Profile" };
-  const rows = captures.map((c) => `
+  const TYPE_SHORT = { meter: "Meter", sensor: "Sensor", fido: "FIDO", sat: "SAT", replacement: "Replacement", amr: "AMR", consumption: "Profile" };
+  const rows = captures.map((c) => {
+    if (c.type === "amr") {
+      const count = (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0);
+      return `
+    <tr>
+      <td>${c.photo ? `<img src="${c.photo}" class="thumb" />` : "—"}</td>
+      <td>${c.position}</td>
+      <td>${c.amrAssetType || "AMR"}</td>
+      <td>${count} meters linked</td>
+      <td>${c.amrSerial || "—"}</td>
+      <td>${c.timestamp.date}</td>
+      <td>${c.timestamp.time}</td>
+      <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
+      <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
+      <td>—</td>
+    </tr>`;
+    }
+    if (c.type === "replacement") {
+      return `
+    <tr>
+      <td>
+        ${c.oldMeter?.photo ? `<img src="${c.oldMeter.photo}" class="thumb" title="Old" />` : "—"}
+        ${c.newMeter?.photo ? `<img src="${c.newMeter.photo}" class="thumb" title="New" />` : ""}
+      </td>
+      <td>${c.position}</td>
+      <td>Replacement</td>
+      <td>OLD: ${c.oldMeter?.reading ? `${c.oldMeter.reading} m³` : "—"}<br/>NEW: ${c.newMeter?.reading ? `${c.newMeter.reading} m³` : "—"}</td>
+      <td>OLD: ${c.oldMeter?.serial || "—"}<br/>NEW: ${c.newMeter?.serial || "—"}</td>
+      <td>${c.timestamp.date}</td>
+      <td>${c.timestamp.time}</td>
+      <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
+      <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
+      <td>—</td>
+    </tr>`;
+    }
+    return `
     <tr>
       <td>${(c.photo || c.fido?.photo || c.consumption?.photo) ? `<img src="${c.photo || c.fido?.photo || c.consumption?.photo}" class="thumb" />` : "—"}</td>
       <td>${c.position}</td>
@@ -491,7 +585,24 @@ function printReport(survey, captures, reviewer, counts, pct) {
       <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
       <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
       <td>${c.sensor?.sessionId || "—"}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
+
+  const amrAssets = captures.filter((c) => c.type === "amr" && (c.amrShots || []).length);
+  const amrAppendix = amrAssets.length ? `
+      <h2 style="font-size:15px; margin:30px 0 6px;">Appendix — AMR Linked Meters</h2>
+      ${amrAssets.map((c) => {
+        const meters = (c.amrShots || []).flatMap((s) => s.meters || []);
+        return `
+        <h3 style="font-size:12.5px; margin:16px 0 4px;">${c.amrAssetType || "AMR"} · ${c.position}${c.amrSerial ? ` · ${c.amrSerial}` : ""} <span style="font-weight:normal;color:#5B6570;">(${meters.length} meters)</span></h3>
+        <table>
+          <thead><tr><th>Meter Serial</th><th>Model</th><th>Signal</th></tr></thead>
+          <tbody>
+            ${meters.map((m) => `<tr><td>${m.serial || "—"}</td><td>${m.model || "—"}</td><td>${m.signal || "—"}</td></tr>`).join("")}
+          </tbody>
+        </table>`;
+      }).join("")}
+  ` : "";
 
   win.document.write(`
     <!doctype html><html><head><title>${survey.surveyName || "Meter Survey"} Report</title>
@@ -509,7 +620,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
       table { width:100%; border-collapse: collapse; font-size:12px; }
       th, td { border: 1px solid #DCE3E8; padding: 6px 8px; text-align:left; vertical-align: middle; }
       th { background: #F4F7F9; }
-      .thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; display:block; }
+      .thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; display:inline-block; margin: 1px; }
       .footer { margin-top: 22px; font-size: 11px; color:#5B6570; }
       @media print { .no-print { display:none; } }
     </style></head><body>
@@ -531,6 +642,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
         <thead><tr><th>Photo</th><th>Position</th><th>Type</th><th>Reading</th><th>Serial</th><th>Date</th><th>Time</th><th>GPS</th><th>Status</th><th>Session ID</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      ${amrAppendix}
       <div class="footer">Generated by THYNK-H2O Meter Capture & Audit.</div>
       <div class="no-print" style="margin-top:24px;">
         <button onclick="window.print()" style="background:#0D86F3;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;">Print / Save as PDF</button>
@@ -767,8 +879,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
       return;
     }
     setCaptureError("");
-    // FIDO feedback is always a screenshot from the gallery.
-    if (type === "fido") {
+    // FIDO feedback and AMR reader screenshots come from the gallery.
+    if (type === "fido" || type === "amrShot") {
       pickTypeRef.current = type;
       galleryInputRef.current?.click();
       return;
@@ -830,6 +942,119 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           setCaptureError("AI couldn't read this meter — please type the reading and serial manually.");
         } else if (!reading) {
           setCaptureError("The register wasn't clearly legible — please check the photo or type the reading manually.");
+        }
+      } else if (type === "amrAsset") {
+        // AMR asset photo (MUC or repeater) — AI reads serial if legible, GPS at capture
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        let serial = "";
+        try {
+          const extracted = await extractWithVision(photo, `This is a photograph of AMR telemetry equipment (a MUC, concentrator, or signal repeater) mounted in the field. Respond with ONLY a JSON object: {"serial": string|null}. Return the device serial number if one is clearly legible on a label or the device body, otherwise null. Do not guess.`);
+          serial = extracted.serial || "";
+        } catch (visionErr) {
+          // silent — serial can be typed manually
+        }
+        setPending((p) => {
+          const base = p || {
+            id: Date.now(),
+            type: "amr",
+            position: position.trim(),
+            reading: "",
+            serial: "",
+            confidence: 0,
+            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            timestamp: nowStamp(),
+            status: "needs_review",
+            tech: survey.tech,
+            sentAt: null,
+            photo: null,
+            sensor: null,
+            consumption: null,
+            fido: null,
+            oldMeter: null,
+            newMeter: null,
+            amrAssetType: "MUC",
+            amrSerial: "",
+            amrShots: [],
+          };
+          return {
+            ...base,
+            photo,
+            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            amrSerial: base.amrSerial || serial,
+          };
+        });
+        if (!serial) {
+          setCaptureError("Serial not readable from the photo — please type it in below.");
+        }
+      } else if (type === "amrShot") {
+        // Handheld reader screenshot — AI extracts the meter list
+        const photo = await loadDownscaledPhoto(file, 1200);
+        let extracted = { meters: [], concentratorId: null };
+        let aiFailed = false;
+        try {
+          extracted = await extractWithVision(photo, AMR_SCREENSHOT_PROMPT);
+        } catch (visionErr) {
+          aiFailed = true;
+        }
+        setPending((p) => {
+          if (!p) return p;
+          const shots = [...(p.amrShots || []), {
+            photo,
+            meters: extracted.meters || [],
+            concentratorId: extracted.concentratorId || null,
+          }];
+          return { ...p, amrShots: shots };
+        });
+        if (aiFailed) {
+          setCaptureError("Couldn't read that screenshot — try a clearer capture.");
+        }
+      } else if (type === "oldMeter" || type === "newMeter") {
+        // Meter replacement — old meter out, new meter in, sharing one GPS at the position
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        let reading = "";
+        let serial = "";
+        let confidence = 0;
+        let aiFailed = false;
+        try {
+          const extracted = await extractWithVision(photo, METER_PROMPT);
+          reading = extracted.reading || "";
+          serial = extracted.serial || "";
+          confidence = Math.max(0, Math.min(100, Number(extracted.confidence) || 0));
+        } catch (visionErr) {
+          aiFailed = true;
+        }
+        const side = { photo, reading, serial, confidence };
+        setPending((p) => {
+          const base = p || {
+            id: Date.now(),
+            type: "replacement",
+            position: position.trim(),
+            reading: "",
+            serial: "",
+            confidence: 0,
+            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            timestamp: nowStamp(),
+            status: "needs_review",
+            tech: survey.tech,
+            sentAt: null,
+            photo: null,
+            sensor: null,
+            consumption: null,
+            fido: null,
+            oldMeter: null,
+            newMeter: null,
+          };
+          return {
+            ...base,
+            // keep the first GPS captured at this position for both meters
+            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            [type]: side,
+          };
+        });
+        if (aiFailed) {
+          setCaptureError("AI couldn't read this meter — type the serial and reading manually.");
+        } else if (!reading || !serial) {
+          setCaptureError("Some details weren't clearly legible — please check and complete them.");
         }
       } else if (type === "sat") {
         // SAT survey — site photo with GPS and notes
@@ -1007,6 +1232,69 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 What are you capturing at this point?
               </div>
 
+              {task === "amr" ? (
+                <div
+                  onClick={() => openPicker("amrAsset")}
+                  style={{
+                    height: 130, borderRadius: 14, cursor: stage === "idle" ? "pointer" : "default",
+                    border: `2px dashed ${position.trim() ? C.primary : C.line}`,
+                    background: C.paper, display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center", gap: 8,
+                    animation: shake ? "shake 0.4s" : "none"
+                  }}>
+                  {stage === "scanning" ? (
+                    <>
+                      <Loader2 size={26} color={C.primary} className="spin" />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: C.charcoalSoft }}>Reading photo…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Radio size={26} color={position.trim() ? C.primary : C.charcoalSoft} />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: position.trim() ? C.primary : C.charcoalSoft }}>
+                        Photograph MUC / Repeater
+                      </span>
+                    </>
+                  )}
+                </div>
+              ) : task === "replacement" ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                  <button
+                    onClick={() => openPicker("oldMeter")}
+                    disabled={stage === "scanning"}
+                    style={{
+                      padding: "18px 12px", borderRadius: 12, cursor: "pointer",
+                      border: `2px dashed ${pending?.oldMeter ? C.approve : position.trim() ? C.primary : C.line}`,
+                      background: pending?.oldMeter ? C.approveSoft : C.paper,
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                      fontFamily: "'Inter',sans-serif", fontSize: 13, fontWeight: 600,
+                      color: pending?.oldMeter ? C.approve : position.trim() ? C.primary : C.charcoalSoft,
+                      animation: shake ? "shake 0.4s" : "none"
+                    }}>
+                    {pending?.oldMeter ? <CheckCircle2 size={18} /> : <Camera size={18} />}
+                    {pending?.oldMeter ? "Old Meter Captured — retake" : "1 · Photograph OLD Meter"}
+                  </button>
+                  <button
+                    onClick={() => openPicker("newMeter")}
+                    disabled={stage === "scanning"}
+                    style={{
+                      padding: "18px 12px", borderRadius: 12, cursor: "pointer",
+                      border: `2px dashed ${pending?.newMeter ? C.approve : position.trim() ? C.primary : C.line}`,
+                      background: pending?.newMeter ? C.approveSoft : C.paper,
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                      fontFamily: "'Inter',sans-serif", fontSize: 13, fontWeight: 600,
+                      color: pending?.newMeter ? C.approve : position.trim() ? C.primary : C.charcoalSoft
+                    }}>
+                    {pending?.newMeter ? <CheckCircle2 size={18} /> : <Camera size={18} />}
+                    {pending?.newMeter ? "New Meter Captured — retake" : "2 · Photograph NEW Meter"}
+                  </button>
+                  {stage === "scanning" && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 4 }}>
+                      <Loader2 size={16} color={C.primary} className="spin" />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoalSoft }}>Reading meter…</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
               <div
                 onClick={() => openPicker(task === "meter" ? "meter" : task === "sat" ? "sat" : "sensor")}
                 style={{
@@ -1032,6 +1320,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                   </>
                 )}
               </div>
+              )}
 
               {task === "fido" && (
                 <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -1067,6 +1356,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 {pending.type === "sensor" && <><Radio size={14} /> Sensor Deployment</>}
                 {pending.type === "fido" && <><Activity size={14} /> FIDO Feedback</>}
                 {pending.type === "sat" && <><MapPin size={14} /> SAT Survey Point</>}
+                {pending.type === "replacement" && <><RotateCcw size={14} /> Meter Replacement</>}
+                {pending.type === "amr" && <><Radio size={14} /> {pending.amrAssetType || "AMR"} Survey</>}
               </div>
 
               {captureError && (
@@ -1145,6 +1436,178 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       { key: "batteryVoltage", label: "BATTERY" },
                     ]}
                   />
+                </>
+              )}
+
+              {/* ---- AMR SURVEY: asset photo, serial, and reader screenshots ---- */}
+              {pending.type === "amr" && (
+                <>
+                  <PhotoWell position={pending.position} timestamp={pending.timestamp} gps={pending.gps} photo={pending.photo} />
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 8,
+                    padding: "7px 10px", borderRadius: 8, background: C.paper
+                  }}>
+                    <MapPin size={12} color={pending.gps?.lat !== "Unknown" ? C.approve : C.review} />
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, fontWeight: 600 }}>
+                      {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <div style={{ flex: "0 0 40%" }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600, color: C.charcoalSoft, marginBottom: 4 }}>ASSET TYPE</div>
+                      <div style={{ display: "flex", gap: 5 }}>
+                        {AMR_ASSET_TYPES.map((t) => {
+                          const active = pending.amrAssetType === t;
+                          return (
+                            <button key={t} onClick={() => editField("amrAssetType", t)} style={{
+                              flex: 1, padding: "8px 4px", borderRadius: 8, cursor: "pointer",
+                              border: `1.5px solid ${active ? C.primary : C.line}`,
+                              background: active ? "#E7F2FE" : "#fff",
+                              fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 600,
+                              color: active ? C.primary : C.charcoalSoft
+                            }}>{t}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600, color: C.charcoalSoft, marginBottom: 4 }}>SERIAL NUMBER</div>
+                      <input
+                        value={pending.amrSerial || ""}
+                        onChange={(e) => editField("amrSerial", e.target.value)}
+                        placeholder="Type if not on photo"
+                        style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 600, color: C.charcoal }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.charcoal }}>
+                        Reader screenshots ({(pending.amrShots || []).length}/4)
+                      </span>
+                      {(pending.amrShots || []).length < 4 && (
+                        <button onClick={() => openPicker("amrShot")} disabled={stage === "scanning"} style={{
+                          border: "none", background: "none", color: C.primary, cursor: "pointer",
+                          fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 11.5,
+                          display: "flex", alignItems: "center", gap: 4
+                        }}>
+                          {stage === "scanning" ? <Loader2 size={13} className="spin" /> : <Camera size={13} />} Add
+                        </button>
+                      )}
+                    </div>
+                    {(pending.amrShots || []).length === 0 ? (
+                      <div style={{
+                        padding: "14px 10px", borderRadius: 10, border: `1.5px dashed ${C.line}`, background: C.paper,
+                        textAlign: "center", fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft
+                      }}>
+                        Add up to 4 screenshots from the handheld reader
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                        {pending.amrShots.map((shot, i) => (
+                          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: 8, borderRadius: 9, background: C.paper }}>
+                            <img src={shot.photo} alt={`Screenshot ${i + 1}`} style={{ width: 40, height: 52, objectFit: "cover", borderRadius: 5, flexShrink: 0 }} />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoal }}>
+                                {(shot.meters || []).length} meters read
+                              </div>
+                              {shot.concentratorId && (
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft }}>
+                                  ID: {shot.concentratorId}
+                                </div>
+                              )}
+                            </div>
+                            <button onClick={() => editField("amrShots", pending.amrShots.filter((_, j) => j !== i))} style={{
+                              border: "none", background: "none", cursor: "pointer", padding: 4
+                            }}>
+                              <X size={13} color={C.charcoalSoft} />
+                            </button>
+                          </div>
+                        ))}
+                        <div style={{
+                          padding: "8px 11px", borderRadius: 8, background: C.approveSoft,
+                          fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.approve, textAlign: "center"
+                        }}>
+                          {pending.amrShots.reduce((n, s) => n + (s.meters || []).length, 0)} meters linked to this {pending.amrAssetType?.toLowerCase() || "asset"}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ---- METER REPLACEMENT: old and new side by side ---- */}
+              {pending.type === "replacement" && (
+                <>
+                  {[
+                    { key: "oldMeter", label: "OLD METER (removed)", tone: C.review, toneSoft: C.reviewSoft },
+                    { key: "newMeter", label: "NEW METER (installed)", tone: C.approve, toneSoft: C.approveSoft },
+                  ].map((side) => {
+                    const data = pending[side.key];
+                    return (
+                      <div key={side.key} style={{
+                        marginBottom: 12, padding: 11, borderRadius: 12,
+                        border: `1.5px solid ${data ? side.tone : C.line}`,
+                        background: data ? side.toneSoft : C.paper
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: data ? 9 : 0 }}>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700, color: side.tone, letterSpacing: 0.3 }}>
+                            {side.label}
+                          </span>
+                          <button
+                            onClick={() => openPicker(side.key)}
+                            style={{
+                              border: "none", background: "none", color: C.primary, cursor: "pointer",
+                              fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 11,
+                              display: "flex", alignItems: "center", gap: 4
+                            }}>
+                            <Camera size={12} /> {data ? "Retake" : "Add"}
+                          </button>
+                        </div>
+                        {data && (
+                          <div style={{ display: "flex", gap: 9 }}>
+                            <img src={data.photo} alt={side.label} style={{ width: 68, height: 52, objectFit: "cover", borderRadius: 7, flexShrink: 0 }} />
+                            <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                              <div>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>SERIAL</div>
+                                <input
+                                  value={data.serial || ""}
+                                  onChange={(e) => editField(side.key, { ...data, serial: e.target.value })}
+                                  placeholder="—"
+                                  style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, background: "#fff" }}
+                                />
+                              </div>
+                              <div>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>READING (m³)</div>
+                                <input
+                                  value={data.reading || ""}
+                                  onChange={(e) => editField(side.key, { ...data, reading: e.target.value })}
+                                  placeholder="—"
+                                  style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, background: "#fff" }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                    padding: "8px 10px", borderRadius: 8, background: C.paper
+                  }}>
+                    <MapPin size={12} color={pending.gps?.lat !== "Unknown" ? C.approve : C.review} />
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, fontWeight: 600 }}>
+                      {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
+                    </span>
+                  </div>
+                  {(!pending.oldMeter || !pending.newMeter) && (
+                    <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.review, textAlign: "center", marginTop: 8 }}>
+                      {!pending.oldMeter ? "Old meter photo still needed." : "New meter photo still needed."}
+                    </p>
+                  )}
                 </>
               )}
 
@@ -1497,7 +1960,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
             <div key={c.id} onClick={() => { setSelected(c); setEditMode(false); }} style={{
               cursor: "pointer", borderRadius: 13, border: `1px solid ${C.line}`, overflow: "hidden", background: "#fff"
             }}>
-              <PhotoWell size="small" photo={c.photo || c.fido?.photo || c.consumption?.photo || c.sensor?.photo} />
+              <PhotoWell size="small" photo={c.photo || c.newMeter?.photo || c.oldMeter?.photo || c.fido?.photo || c.consumption?.photo || c.sensor?.photo} />
               <div style={{ padding: "9px 10px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontWeight: 600, fontSize: 13, color: C.charcoal }}>{c.position}</span>
@@ -1509,6 +1972,8 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {c.type === "sensor" && <><Radio size={10} color={C.primary} /> Sensor</>}
                     {c.type === "fido" && <><Activity size={10} color={C.primary} /> FIDO</>}
                     {c.type === "sat" && <><MapPin size={10} color={C.primary} /> SAT</>}
+                    {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
+                    {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
                     {c.type === "consumption" && <><Activity size={10} color={C.primary} /> Profile</>}
                   </span>
                   {c.sentAt && <Send size={10} color={C.charcoalSoft} />}
@@ -1607,6 +2072,35 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   </div>
                 </>
               )}
+              {selected.type === "amr" && (
+                <>
+                  <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Asset Type</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>{selected.amrAssetType || "—"}</div>
+                  </div>
+                  <div style={{ background: editMode ? "#fff" : C.paper, border: editMode ? `1.5px solid ${C.primary}` : "none", borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Serial</div>
+                    {editMode ? (
+                      <input value={selected.amrSerial || ""} onChange={(e) => updateCapture(selected.id, { amrSerial: e.target.value })}
+                        style={{ width: "100%", border: "none", outline: "none", fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600, padding: 0, background: "transparent" }} />
+                    ) : (
+                      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>{selected.amrSerial || "—"}</div>
+                    )}
+                  </div>
+                </>
+              )}
+              {selected.type === "replacement" && (
+                <>
+                  <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Type</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>Meter Replacement</div>
+                  </div>
+                  <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Position</div>
+                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>{selected.position}</div>
+                  </div>
+                </>
+              )}
               {selected.type === "sat" && (
                 <>
                   <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
@@ -1655,6 +2149,86 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               }}>
                 <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft }}>AI Confidence</span>
                 <MiniGauge value={selected.confidence} color={selected.confidence < 85 ? C.review : C.approve} />
+              </div>
+            )}
+
+            {selected.type === "amr" && (selected.amrShots || []).length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.charcoal, marginBottom: 8 }}>
+                  Meters linked to this {selected.amrAssetType?.toLowerCase() || "asset"} ({selected.amrShots.reduce((n, s) => n + (s.meters || []).length, 0)})
+                </div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 9, flexWrap: "wrap" }}>
+                  {selected.amrShots.map((shot, i) => (
+                    <img key={i} src={shot.photo} alt={`Screenshot ${i + 1}`}
+                      style={{ width: 44, height: 58, objectFit: "cover", borderRadius: 6, border: `1px solid ${C.line}` }} />
+                  ))}
+                </div>
+                <div style={{ maxHeight: 200, overflowY: "auto", borderRadius: 9, border: `1px solid ${C.line}` }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: C.paper }}>
+                        <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SERIAL</th>
+                        <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>MODEL</th>
+                        <th style={{ textAlign: "right", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SIGNAL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.amrShots.flatMap((s) => s.meters || []).map((m, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${C.line}` }}>
+                          <td style={{ padding: "5px 8px", color: C.charcoal, fontWeight: 600 }}>{m.serial}</td>
+                          <td style={{ padding: "5px 8px", color: C.charcoalSoft }}>{m.model || "—"}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "right", color: C.charcoalSoft }}>{m.signal || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {selected.type === "replacement" && (
+              <div style={{ marginBottom: 16 }}>
+                {[
+                  { key: "oldMeter", label: "OLD METER (removed)", tone: C.review, toneSoft: C.reviewSoft },
+                  { key: "newMeter", label: "NEW METER (installed)", tone: C.approve, toneSoft: C.approveSoft },
+                ].map((side) => {
+                  const data = selected[side.key];
+                  if (!data) return (
+                    <div key={side.key} style={{ marginBottom: 10, padding: 10, borderRadius: 9, background: C.paper, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.review }}>
+                      {side.label} — not captured
+                    </div>
+                  );
+                  return (
+                    <div key={side.key} style={{ marginBottom: 10, padding: 10, borderRadius: 9, background: side.toneSoft, border: `1px solid ${side.tone}` }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: side.tone, marginBottom: 8, letterSpacing: 0.3 }}>
+                        {side.label}
+                      </div>
+                      <div style={{ display: "flex", gap: 9 }}>
+                        <img src={data.photo} alt={side.label} style={{ width: 80, height: 60, objectFit: "cover", borderRadius: 7, flexShrink: 0 }} />
+                        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>SERIAL</div>
+                            {editMode ? (
+                              <input value={data.serial || ""} onChange={(e) => updateCapture(selected.id, { [side.key]: { ...data, serial: e.target.value } })}
+                                style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", borderRadius: 5, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal }} />
+                            ) : (
+                              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 600, color: C.charcoal }}>{data.serial || "—"}</div>
+                            )}
+                          </div>
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>READING</div>
+                            {editMode ? (
+                              <input value={data.reading || ""} onChange={(e) => updateCapture(selected.id, { [side.key]: { ...data, reading: e.target.value } })}
+                                style={{ width: "100%", boxSizing: "border-box", padding: "4px 6px", borderRadius: 5, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal }} />
+                            ) : (
+                              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 600, color: C.charcoal }}>{data.reading ? `${data.reading} m³` : "—"}</div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
