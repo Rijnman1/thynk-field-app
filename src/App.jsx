@@ -213,6 +213,62 @@ const TASKS = {
     blurb: "Map MUCs and repeaters, and record which meters each one can see.",
     icon: Radio,
   },
+  assets: {
+    label: "Asset Mapping",
+    blurb: "Map estate infrastructure — water, electrical, AMR and general assets with coordinates.",
+    icon: LayoutGrid,
+  },
+};
+
+/* Asset taxonomy — matches the estate asset intake template exactly */
+const ASSET_CATEGORIES = {
+  WATER: [
+    "BULK WATER METER",
+    "ZONE METER",
+    "SECTIONAL TITLE METER",
+    "FREEHOLD WATER METER",
+    "COMMON PROPERTY METER",
+    "SECTIONAL TITLE INTERNAL METER",
+    "ISOLATION VALVE",
+    "PRESSURE CONTROL VALVE",
+    "BOREHOLE",
+    "WATER TANK",
+  ],
+  ELECTRICAL: [
+    "FREEHOLD ELECTRICAL METER",
+    "SECTIONAL TITLE ELECTRICAL METER",
+    "ELECTRICAL KIOSK",
+    "DB BOARD",
+    "POLE",
+    "MINI SUBSTATION",
+  ],
+  "AMR EQUIPMENT": [
+    "MUC",
+    "REPEATER",
+    "CONCENTRATOR",
+    "GATEWAY",
+    "KAMSTRUP GATEWAY",
+    "MINI KAMSTRUP GATEWAY",
+    "LORA GATEWAY",
+    "4G BRIDGE",
+  ],
+  GENERAL: [
+    "FIRE HYDRANT",
+    "DRAIN COVER",
+    "MANHOLE",
+    "STORMWATER INLET",
+    "FIBRE CHAMBER",
+    "STREET LIGHT",
+    "IRRIGATION POINT",
+    "SIGNAGE",
+  ],
+};
+
+const CATEGORY_COLOURS = {
+  WATER: "#0D86F3",
+  ELECTRICAL: "#D98A22",
+  "AMR EQUIPMENT": "#7B5BD6",
+  GENERAL: "#5B6570",
 };
 
 const AMR_ASSET_TYPES = ["MUC", "Repeater"];
@@ -494,6 +550,26 @@ function exportExcel(survey, captures, reviewer) {
       ...trailing(c),
     }));
     widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else if (task === "assets") {
+    sheetName = "Asset Register";
+    fileSuffix = "asset_register";
+    rows = captures.map((c) => ({
+      asset_id: c.position || "",
+      category: c.assetCategory || "",
+      asset_type: c.assetType || "",
+      description: c.assetDescription || "",
+      serial: c.assetSerial || "",
+      latitude: c.gps?.lat && c.gps.lat !== "Unknown" ? c.gps.lat : "",
+      longitude: c.gps?.lng && c.gps.lng !== "Unknown" ? c.gps.lng : "",
+      zone_or_street: c.assetZone || "",
+      erf_or_unit: c.assetErf || "",
+      access_notes: c.assetAccessNotes || "",
+      date_captured: c.timestamp.date,
+      captured_by: c.tech || "",
+      verified_by: c.status === "approved" ? (reviewer || "") : "",
+      status: STATUS_EXPORT_LABEL[c.status] || c.status,
+    }));
+    widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "replacement") {
     sheetName = "Meter Replacements";
     fileSuffix = "meter_replacements";
@@ -579,6 +655,127 @@ function exportExcel(survey, captures, reviewer) {
   }
 
   XLSX.writeFile(wb, `${safeFilename(survey.surveyName)}_${fileSuffix}.xlsx`);
+}
+
+/* CSV export in the estate asset intake template format */
+function exportAssetCSV(survey, captures) {
+  const headers = [
+    "asset_id", "category", "asset_type", "description", "serial",
+    "latitude", "longitude", "zone_or_street", "erf_or_unit", "access_notes",
+    "date_captured", "captured_by",
+  ];
+  const esc = (v) => {
+    const s = (v === null || v === undefined) ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers.join(",")];
+  captures.forEach((c) => {
+    lines.push([
+      c.position || "",
+      c.assetCategory || "",
+      c.assetType || "",
+      c.assetDescription || "",
+      c.assetSerial || "",
+      c.gps?.lat && c.gps.lat !== "Unknown" ? c.gps.lat : "",
+      c.gps?.lng && c.gps.lng !== "Unknown" ? c.gps.lng : "",
+      c.assetZone || "",
+      c.assetErf || "",
+      c.assetAccessNotes || "",
+      c.timestamp?.date || "",
+      c.tech || "",
+    ].map(esc).join(","));
+  });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${safeFilename(survey.surveyName)}_asset_register.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* Asset register PDF — one card per asset so a person can go and find it */
+function printAssetRegister(survey, captures, reviewer) {
+  const win = window.open("", "_blank", "width=900,height=1000");
+  if (!win) return;
+
+  const byCategory = {};
+  captures.forEach((c) => {
+    const cat = c.assetCategory || "UNCATEGORISED";
+    (byCategory[cat] = byCategory[cat] || []).push(c);
+  });
+
+  const catColour = { WATER: "#0D86F3", ELECTRICAL: "#D98A22", "AMR EQUIPMENT": "#7B5BD6", GENERAL: "#5B6570", UNCATEGORISED: "#5B6570" };
+
+  const sections = Object.entries(byCategory).map(([cat, items]) => `
+    <h2 style="font-size:15px; margin:26px 0 10px; color:${catColour[cat] || "#2B2F33"}; border-bottom:2px solid ${catColour[cat] || "#DCE3E8"}; padding-bottom:4px;">
+      ${cat} <span style="font-weight:normal;color:#5B6570;font-size:12px;">(${items.length})</span>
+    </h2>
+    ${items.map((c) => `
+      <div class="card">
+        ${c.photo ? `<img src="${c.photo}" class="cardphoto" />` : `<div class="cardphoto placeholder">NO PHOTO</div>`}
+        <div class="cardbody">
+          <div class="cardtype">${c.assetType || "—"}</div>
+          <div class="carddesc">${c.assetDescription || "NO DESCRIPTION RECORDED"}</div>
+          <table class="cardmeta">
+            <tr><td>COORDINATES</td><td class="mono">${c.gps && c.gps.lat !== "Unknown" ? `${c.gps.lat}, ${c.gps.lng}` : "NOT CAPTURED"}</td></tr>
+            ${c.assetSerial ? `<tr><td>SERIAL</td><td class="mono">${c.assetSerial}</td></tr>` : ""}
+            ${c.assetZone ? `<tr><td>ZONE / STREET</td><td>${c.assetZone}</td></tr>` : ""}
+            ${c.assetErf ? `<tr><td>ERF / UNIT</td><td class="mono">${c.assetErf}</td></tr>` : ""}
+            ${c.assetAccessNotes ? `<tr><td>ACCESS</td><td>${c.assetAccessNotes}</td></tr>` : ""}
+            <tr><td>CAPTURED</td><td>${c.timestamp.date} · ${c.tech || "—"}</td></tr>
+          </table>
+        </div>
+      </div>`).join("")}
+  `).join("");
+
+  win.document.write(`
+    <!doctype html><html><head><title>${survey.siteName || "Estate"} Asset Register</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { font-family: Arial, Helvetica, sans-serif; color:#2B2F33; padding:32px; margin:0; }
+      .brand { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+      .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
+      .brand span { font-weight:700; font-size:16px; }
+      h1 { font-size:20px; margin:16px 0 2px; }
+      .meta { color:#5B6570; font-size:12.5px; margin-bottom:14px; }
+      .summary { display:flex; gap:22px; padding:12px 16px; background:#F4F7F9; border-radius:10px; margin-bottom:8px; }
+      .summary b { display:block; font-size:19px; }
+      .summary span { font-size:10.5px; color:#5B6570; letter-spacing:0.3px; }
+      .card { display:flex; gap:14px; border:1px solid #DCE3E8; border-radius:10px; padding:12px; margin-bottom:10px; page-break-inside:avoid; }
+      .cardphoto { width:150px; height:112px; object-fit:cover; border-radius:7px; flex-shrink:0; }
+      .cardphoto.placeholder { display:flex; align-items:center; justify-content:center; background:#F4F7F9; color:#A6AFB6; font-size:10px; }
+      .cardbody { flex:1; }
+      .cardtype { font-size:13px; font-weight:700; margin-bottom:3px; }
+      .carddesc { font-size:12px; color:#2B2F33; margin-bottom:8px; }
+      .cardmeta { width:100%; border-collapse:collapse; font-size:11px; }
+      .cardmeta td { padding:2px 0; vertical-align:top; }
+      .cardmeta td:first-child { color:#5B6570; width:120px; font-size:9.5px; letter-spacing:0.3px; padding-top:3px; }
+      .mono { font-family:'Courier New', monospace; }
+      .footer { margin-top:24px; font-size:11px; color:#5B6570; }
+      @media print { .no-print { display:none; } }
+    </style></head><body>
+      <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
+      <h1>${survey.siteName || "Untitled Site"} — Asset Register</h1>
+      <div class="meta">
+        Survey: ${survey.surveyName || "—"} &nbsp;·&nbsp; Address: ${survey.address || "—"} &nbsp;·&nbsp;
+        Captured by: ${survey.tech || "—"} &nbsp;·&nbsp; Verified by: ${reviewer || "—"} &nbsp;·&nbsp;
+        Generated: ${new Date().toLocaleDateString()}
+      </div>
+      <div class="summary">
+        <div><b>${captures.length}</b><span>ASSETS MAPPED</span></div>
+        ${Object.entries(byCategory).map(([cat, items]) => `<div><b>${items.length}</b><span>${cat}</span></div>`).join("")}
+      </div>
+      ${sections}
+      <div class="footer">Coordinates are WGS84 decimal degrees. Generated by THYNK-H2O Field Capture.</div>
+      <div class="no-print" style="margin-top:24px;">
+        <button onclick="window.print()" style="background:#0D86F3;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;">Print / Save as PDF</button>
+      </div>
+    </body></html>
+  `);
+  win.document.close();
 }
 
 function printReport(survey, captures, reviewer, counts, pct) {
@@ -803,7 +1000,12 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
     setGpsLocking(false);
   };
 
-  const canStart = survey.siteName && survey.surveyName && survey.tech;
+  const missing = [
+    !survey.siteName && "Estate / Site Name",
+    !survey.surveyName && "Survey Name",
+    !survey.tech && "Technician Name",
+  ].filter(Boolean);
+  const canStart = missing.length === 0;
 
   return (
     <div style={{ maxWidth: 440, margin: "0 auto", padding: "28px 4px" }}>
@@ -897,6 +1099,14 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
         }}>
         Start Survey <ArrowRight size={16} />
       </button>
+      {!canStart && (
+        <p style={{
+          fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.review,
+          textAlign: "center", marginTop: 9, marginBottom: 0
+        }}>
+          Still needed: {missing.join(", ")}
+        </p>
+      )}
     </div>
   );
 }
@@ -990,6 +1200,42 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
         } else if (!reading) {
           setCaptureError("The register wasn't clearly legible — please check the photo or type the reading manually.");
         }
+      } else if (type === "asset") {
+        // Asset mapping — photo, GPS, and AI-read serial where visible
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        let serial = "";
+        try {
+          const extracted = await extractWithVision(photo, `This is a photograph of an estate infrastructure asset (a meter, valve, kiosk, hydrant, chamber, telemetry device or similar). Respond with ONLY a JSON object: {"serial": string|null}. Return the serial or device number if one is clearly legible on the asset, otherwise null. Do not guess.`);
+          serial = extracted.serial || "";
+        } catch (visionErr) {
+          // silent — serial is optional and can be typed
+        }
+        setPending({
+          id: Date.now(),
+          type: "asset",
+          position: position.trim(),
+          reading: "",
+          serial: "",
+          confidence: 0,
+          gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+          timestamp: nowStamp(),
+          status: "needs_review",
+          tech: survey.tech,
+          sentAt: null,
+          photo,
+          sensor: null,
+          consumption: null,
+          fido: null,
+          oldMeter: null,
+          newMeter: null,
+          assetCategory: null,
+          assetType: null,
+          assetSerial: serial,
+          assetDescription: "",
+          assetZone: "",
+          assetErf: "",
+          assetAccessNotes: "",
+        });
       } else if (type === "amrAsset") {
         // AMR asset photo (MUC or repeater) — AI reads serial if legible, GPS at capture
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
@@ -1280,7 +1526,31 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 What are you capturing at this point?
               </div>
 
-              {task === "amr" ? (
+              {task === "assets" ? (
+                <div
+                  onClick={() => openPicker("asset")}
+                  style={{
+                    height: 130, borderRadius: 14, cursor: stage === "idle" ? "pointer" : "default",
+                    border: `2px dashed ${position.trim() ? C.primary : C.line}`,
+                    background: C.paper, display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center", gap: 8,
+                    animation: shake ? "shake 0.4s" : "none"
+                  }}>
+                  {stage === "scanning" ? (
+                    <>
+                      <Loader2 size={26} color={C.primary} className="spin" />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: C.charcoalSoft }}>Reading photo…</span>
+                    </>
+                  ) : (
+                    <>
+                      <LayoutGrid size={26} color={position.trim() ? C.primary : C.charcoalSoft} />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: position.trim() ? C.primary : C.charcoalSoft }}>
+                        Photograph Asset
+                      </span>
+                    </>
+                  )}
+                </div>
+              ) : task === "amr" ? (
                 <div
                   onClick={() => openPicker("amrAsset")}
                   style={{
@@ -1406,6 +1676,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 {pending.type === "sat" && <><MapPin size={14} /> SAT Survey Point</>}
                 {pending.type === "replacement" && <><RotateCcw size={14} /> Meter Replacement</>}
                 {pending.type === "amr" && <><Radio size={14} /> {pending.amrAssetType || "AMR"} Survey</>}
+                {pending.type === "asset" && <><LayoutGrid size={14} /> {pending.assetType || "Asset Mapping"}</>}
               </div>
 
               {captureError && (
@@ -1484,6 +1755,121 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       { key: "batteryVoltage", label: "BATTERY" },
                     ]}
                   />
+                </>
+              )}
+
+              {/* ---- ASSET MAPPING: photo, GPS, category/type, details ---- */}
+              {pending.type === "asset" && (
+                <>
+                  <PhotoWell position={pending.position} timestamp={pending.timestamp} gps={pending.gps} photo={pending.photo} />
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 8,
+                    padding: "7px 10px", borderRadius: 8, background: C.paper
+                  }}>
+                    <MapPin size={12} color={pending.gps?.lat !== "Unknown" ? C.approve : C.review} />
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, fontWeight: 600 }}>
+                      {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
+                    </span>
+                  </div>
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "14px 0 6px" }}>
+                    CATEGORY
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {Object.keys(ASSET_CATEGORIES).map((cat) => {
+                      const active = pending.assetCategory === cat;
+                      const colour = CATEGORY_COLOURS[cat];
+                      return (
+                        <button key={cat}
+                          onClick={() => setPending((p) => ({ ...p, assetCategory: cat, assetType: null }))}
+                          style={{
+                            padding: "10px 6px", borderRadius: 9, cursor: "pointer",
+                            border: `1.5px solid ${active ? colour : C.line}`,
+                            background: active ? `${colour}18` : "#fff",
+                            fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700,
+                            color: active ? colour : C.charcoalSoft
+                          }}>
+                          {cat}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {pending.assetCategory && (
+                    <>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "14px 0 6px" }}>
+                        ASSET TYPE
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        {ASSET_CATEGORIES[pending.assetCategory].map((t) => {
+                          const active = pending.assetType === t;
+                          const colour = CATEGORY_COLOURS[pending.assetCategory];
+                          return (
+                            <button key={t}
+                              onClick={() => editField("assetType", t)}
+                              style={{
+                                padding: "9px 11px", borderRadius: 8, cursor: "pointer", textAlign: "left",
+                                border: `1.5px solid ${active ? colour : C.line}`,
+                                background: active ? `${colour}18` : "#fff",
+                                fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: active ? 700 : 500,
+                                color: active ? colour : C.charcoal
+                              }}>
+                              {t}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {pending.assetType && (
+                    <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
+                          DESCRIPTION — WHERE IS IT? <span style={{ color: C.review }}>REQUIRED</span>
+                        </div>
+                        <textarea
+                          value={pending.assetDescription || ""}
+                          onChange={(e) => editField("assetDescription", e.target.value.toUpperCase())}
+                          placeholder="E.G. CUSSONIA WAY KIOSK 1 - INSIDE KIOSK ON LEFT"
+                          rows={2}
+                          style={{
+                            width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8,
+                            border: `1.5px solid ${pending.assetDescription ? C.line : C.review}`,
+                            fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal, resize: "vertical"
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>SERIAL</div>
+                          <input value={pending.assetSerial || ""} onChange={(e) => editField("assetSerial", e.target.value.toUpperCase())} placeholder="IF VISIBLE"
+                            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: C.charcoal }} />
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>ERF / UNIT</div>
+                          <input value={pending.assetErf || ""} onChange={(e) => editField("assetErf", e.target.value.toUpperCase())} placeholder="IF APPLICABLE"
+                            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: C.charcoal }} />
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>ZONE / STREET</div>
+                        <input value={pending.assetZone || ""} onChange={(e) => editField("assetZone", e.target.value.toUpperCase())} placeholder="E.G. CUSSONIA WAY"
+                          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal }} />
+                      </div>
+                      <div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>ACCESS NOTES</div>
+                        <input value={pending.assetAccessNotes || ""} onChange={(e) => editField("assetAccessNotes", e.target.value.toUpperCase())} placeholder="GATE CODES, KEYS, DOGS, WHO TO CALL"
+                          style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {(!pending.assetType || !pending.assetDescription) && (
+                    <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.review, textAlign: "center", marginTop: 10 }}>
+                      {!pending.assetCategory ? "Choose a category." : !pending.assetType ? "Choose an asset type." : "A description is required — it's how someone finds this later."}
+                    </p>
+                  )}
                 </>
               )}
 
@@ -1973,16 +2359,37 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   }}>
                   <FileSpreadsheet size={14} color={disabled ? C.charcoalSoft : C.approve} /> Download Excel
                 </button>
+                {survey.taskType === "assets" && (
+                  <button
+                    disabled={disabled}
+                    onClick={() => { exportAssetCSV(survey, scoped); markSent(); setPostExport(true); }}
+                    style={{
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                      padding: "9px 12px", borderRadius: 9, border: `1.5px solid ${C.line}`,
+                      background: disabled ? C.paperDeep : "#fff", cursor: disabled ? "not-allowed" : "pointer",
+                      color: disabled ? C.charcoalSoft : C.charcoal, fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 12.5
+                    }}>
+                    <FileSpreadsheet size={14} color={disabled ? C.charcoalSoft : C.primary} /> Download CSV
+                  </button>
+                )}
                 <button
                   disabled={disabled}
-                  onClick={() => { printReport(survey, scoped, reviewer, counts, pct); markSent(); setPostExport(true); }}
+                  onClick={() => {
+                    if (survey.taskType === "assets") {
+                      printAssetRegister(survey, scoped, reviewer);
+                    } else {
+                      printReport(survey, scoped, reviewer, counts, pct);
+                    }
+                    markSent();
+                    setPostExport(true);
+                  }}
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
                     padding: "9px 12px", borderRadius: 9, border: "none",
                     background: disabled ? C.line : C.primary, cursor: disabled ? "not-allowed" : "pointer",
                     color: "#fff", fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 12.5
                   }}>
-                  <Send size={14} /> Export PDF
+                  <Send size={14} /> {survey.taskType === "assets" ? "Asset Register PDF" : "Export PDF"}
                 </button>
                 {disabled && exportScope === "new" && (
                   <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, textAlign: "center" }}>
@@ -2073,6 +2480,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {c.type === "sat" && <><MapPin size={10} color={C.primary} /> SAT</>}
                     {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
                     {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
+                    {c.type === "asset" && <><LayoutGrid size={10} color={CATEGORY_COLOURS[c.assetCategory] || C.primary} /> {c.assetType || "Asset"}</>}
                     {c.type === "consumption" && <><Activity size={10} color={C.primary} /> Profile</>}
                   </span>
                   {c.sentAt && <Send size={10} color={C.charcoalSoft} />}
@@ -2171,6 +2579,28 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   </div>
                 </>
               )}
+              {selected.type === "asset" && (
+                <>
+                  <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Category</div>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 700, color: CATEGORY_COLOURS[selected.assetCategory] || C.charcoal }}>
+                      {selected.assetCategory || "—"}
+                    </div>
+                  </div>
+                  <div style={{ background: editMode ? "#fff" : C.paper, border: editMode ? `1.5px solid ${C.primary}` : "none", borderRadius: 9, padding: "8px 10px" }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Asset Type</div>
+                    {editMode && selected.assetCategory ? (
+                      <select value={selected.assetType || ""} onChange={(e) => updateCapture(selected.id, { assetType: e.target.value })}
+                        style={{ width: "100%", border: "none", outline: "none", fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal, fontWeight: 600, background: "transparent" }}>
+                        <option value="">—</option>
+                        {(ASSET_CATEGORIES[selected.assetCategory] || []).map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    ) : (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: C.charcoal, fontWeight: 600 }}>{selected.assetType || "—"}</div>
+                    )}
+                  </div>
+                </>
+              )}
               {selected.type === "amr" && (
                 <>
                   <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
@@ -2248,6 +2678,37 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               }}>
                 <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft }}>AI Confidence</span>
                 <MiniGauge value={selected.confidence} color={selected.confidence < 85 ? C.review : C.approve} />
+              </div>
+            )}
+
+            {selected.type === "asset" && (
+              <div style={{ marginBottom: 16, padding: 11, borderRadius: 10, background: C.paper }}>
+                {[
+                  { key: "assetDescription", label: "DESCRIPTION", multiline: true },
+                  { key: "assetSerial", label: "SERIAL", mono: true },
+                  { key: "assetZone", label: "ZONE / STREET" },
+                  { key: "assetErf", label: "ERF / UNIT", mono: true },
+                  { key: "assetAccessNotes", label: "ACCESS NOTES" },
+                ].map((f) => (
+                  <div key={f.key} style={{ marginBottom: 9 }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>
+                      {f.label}
+                    </div>
+                    {editMode ? (
+                      f.multiline ? (
+                        <textarea value={selected[f.key] || ""} onChange={(e) => updateCapture(selected.id, { [f.key]: e.target.value.toUpperCase() })} rows={2}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal, resize: "vertical" }} />
+                      ) : (
+                        <input value={selected[f.key] || ""} onChange={(e) => updateCapture(selected.id, { [f.key]: e.target.value.toUpperCase() })}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: f.mono ? "'IBM Plex Mono',monospace" : "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }} />
+                      )
+                    ) : (
+                      <div style={{ fontFamily: f.mono ? "'IBM Plex Mono',monospace" : "'Inter',sans-serif", fontSize: 12, color: selected[f.key] ? C.charcoal : C.charcoalSoft }}>
+                        {selected[f.key] || "—"}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
