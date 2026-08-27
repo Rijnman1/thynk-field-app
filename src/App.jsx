@@ -228,8 +228,8 @@ const ASSET_CATEGORIES = {
   WATER: [
     "BULK WATER METER",
     "ZONE METER",
-    "SECTIONAL TITLE METER",
-    "FREEHOLD WATER METER",
+    "SECTIONAL TITLE BULK METER",
+    "WATER METER",
     "COMMON PROPERTY METER",
     "SECTIONAL TITLE INTERNAL METER",
     "ISOLATION VALVE",
@@ -238,8 +238,9 @@ const ASSET_CATEGORIES = {
     "WATER TANK",
   ],
   ELECTRICAL: [
-    "FREEHOLD ELECTRICAL METER",
-    "SECTIONAL TITLE ELECTRICAL METER",
+    "ELECTRICAL METER",
+    "ELECTRICAL METER THREE PHASE",
+    "SECTIONAL TITLE BULK ELECTRICAL METER",
     "ELECTRICAL KIOSK",
     "DB BOARD",
     "POLE",
@@ -255,10 +256,19 @@ const ASSET_CATEGORIES = {
     "LORA GATEWAY",
     "4G BRIDGE",
   ],
-  GENERAL: [
+  FIRE: [
+    "FIRE EXTINGUISHER",
+    "FIRE HOSE REEL",
     "FIRE HYDRANT",
-    "DRAIN COVER",
+    "FIRE WATER TANK",
+    "FIRE BOOSTER PUMP",
+    "SPRINKLER CONTROL VALVE",
+    "FIRE ALARM PANEL",
+    "FIRE BLANKET",
+  ],
+  GENERAL: [
     "MANHOLE",
+    "DRAIN",
     "STORMWATER INLET",
     "FIBRE CHAMBER",
     "STREET LIGHT",
@@ -268,10 +278,60 @@ const ASSET_CATEGORIES = {
   ],
 };
 
+/* Types that carry a service record. Fire equipment is the compliance-critical set,
+   but pumps, PRVs and boreholes are serviced too. */
+const SERVICEABLE_TYPES = new Set([
+  "FIRE EXTINGUISHER",
+  "FIRE HOSE REEL",
+  "FIRE HYDRANT",
+  "FIRE WATER TANK",
+  "FIRE BOOSTER PUMP",
+  "SPRINKLER CONTROL VALVE",
+  "FIRE ALARM PANEL",
+  "FIRE BLANKET",
+  "PRESSURE CONTROL VALVE",
+  "BOREHOLE",
+  "WATER TANK",
+]);
+
+/* Months between services, by type. Used to flag an overdue service. */
+const SERVICE_INTERVAL_MONTHS = {
+  "FIRE EXTINGUISHER": 12,
+  "FIRE HOSE REEL": 12,
+  "FIRE HYDRANT": 12,
+  "FIRE WATER TANK": 12,
+  "FIRE BOOSTER PUMP": 12,
+  "SPRINKLER CONTROL VALVE": 12,
+  "FIRE ALARM PANEL": 12,
+  "FIRE BLANKET": 12,
+  "PRESSURE CONTROL VALVE": 12,
+  "BOREHOLE": 12,
+  "WATER TANK": 24,
+};
+
+/* Returns { dueDate, overdue, monthsOverdue } or null when no service date is recorded. */
+function serviceStatus(assetType, lastServiceISO) {
+  if (!lastServiceISO) return null;
+  const months = SERVICE_INTERVAL_MONTHS[assetType] || 12;
+  const last = new Date(lastServiceISO);
+  if (isNaN(last.getTime())) return null;
+  const due = new Date(last);
+  due.setMonth(due.getMonth() + months);
+  const now = new Date();
+  const overdue = due < now;
+  const monthsOverdue = overdue
+    ? Math.max(1, Math.round((now - due) / (1000 * 60 * 60 * 24 * 30.44)))
+    : 0;
+  const pad = (n) => String(n).padStart(2, "0");
+  const dueDate = `${pad(due.getDate())} ${MONTHS[due.getMonth()]} ${due.getFullYear()}`;
+  return { dueDate, overdue, monthsOverdue, intervalMonths: months };
+}
+
 const CATEGORY_COLOURS = {
   WATER: "#0D86F3",
   ELECTRICAL: "#D98A22",
   "AMR EQUIPMENT": "#7B5BD6",
+  FIRE: "#D6485A",
   GENERAL: "#5B6570",
 };
 
@@ -571,12 +631,15 @@ function exportExcel(survey, captures, reviewer) {
       zone_or_street: c.assetZone || "",
       erf_or_unit: c.assetErf || "",
       access_notes: c.assetAccessNotes || "",
+      last_service_date: c.assetLastService || "",
+      next_service_due: (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? s.dueDate : ""; })(),
+      service_status: (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? (s.overdue ? "OVERDUE" : "IN DATE") : (SERVICEABLE_TYPES.has(c.assetType) ? "NO RECORD" : ""); })(),
       date_captured: c.timestamp.date,
       captured_by: c.tech || "",
       verified_by: c.status === "approved" ? (reviewer || "") : "",
       status: STATUS_EXPORT_LABEL[c.status] || c.status,
     }));
-    widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "meterwork" && meterMode === "replace") {
     sheetName = "Meter Replacements";
     fileSuffix = "meter_replacements";
@@ -660,6 +723,7 @@ function exportAssetCSV(survey, captures) {
   const headers = [
     "asset_id", "category", "asset_type", "description", "serial",
     "latitude", "longitude", "zone_or_street", "erf_or_unit", "access_notes",
+    "last_service_date", "next_service_due", "service_status",
     "date_captured", "captured_by",
   ];
   const esc = (v) => {
@@ -679,6 +743,9 @@ function exportAssetCSV(survey, captures) {
       c.assetZone || "",
       c.assetErf || "",
       c.assetAccessNotes || "",
+      c.assetLastService || "",
+      (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? s.dueDate : ""; })(),
+      (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? (s.overdue ? "OVERDUE" : "IN DATE") : (SERVICEABLE_TYPES.has(c.assetType) ? "NO RECORD" : ""); })(),
       c.timestamp?.date || "",
       c.tech || "",
     ].map(esc).join(","));
@@ -705,7 +772,26 @@ function printAssetRegister(survey, captures, reviewer) {
     (byCategory[cat] = byCategory[cat] || []).push(c);
   });
 
-  const catColour = { WATER: "#0D86F3", ELECTRICAL: "#D98A22", "AMR EQUIPMENT": "#7B5BD6", GENERAL: "#5B6570", UNCATEGORISED: "#5B6570" };
+  const catColour = { WATER: "#0D86F3", ELECTRICAL: "#D98A22", "AMR EQUIPMENT": "#7B5BD6", FIRE: "#D6485A", GENERAL: "#5B6570", UNCATEGORISED: "#5B6570" };
+
+  const serviceable = captures.filter((c) => SERVICEABLE_TYPES.has(c.assetType));
+  const overdueItems = serviceable.filter((c) => {
+    const s = serviceStatus(c.assetType, c.assetLastService);
+    return s && s.overdue;
+  });
+  const noRecordItems = serviceable.filter((c) => !serviceStatus(c.assetType, c.assetLastService));
+
+  const serviceBanner = serviceable.length ? `
+      <div class="servicebox">
+        <div class="servicehead">SERVICE COMPLIANCE \u2014 ${serviceable.length} SERVICEABLE ASSETS</div>
+        <div class="servicerow">
+          <span class="pill ok">${serviceable.length - overdueItems.length - noRecordItems.length} IN DATE</span>
+          <span class="pill bad">${overdueItems.length} OVERDUE</span>
+          <span class="pill warn">${noRecordItems.length} NO RECORD</span>
+        </div>
+        ${overdueItems.length ? `<div class="servicelist"><b>Overdue:</b> ${overdueItems.map((c) => `${c.assetType} \u00b7 ${c.assetDescription || c.position}`).join("; ")}</div>` : ""}
+        ${noRecordItems.length ? `<div class="servicelist"><b>No service date recorded:</b> ${noRecordItems.map((c) => `${c.assetType} \u00b7 ${c.assetDescription || c.position}`).join("; ")}</div>` : ""}
+      </div>` : "";
 
   const sections = Object.entries(byCategory).map(([cat, items]) => `
     <h2 style="font-size:15px; margin:26px 0 10px; color:${catColour[cat] || "#2B2F33"}; border-bottom:2px solid ${catColour[cat] || "#DCE3E8"}; padding-bottom:4px;">
@@ -723,6 +809,13 @@ function printAssetRegister(survey, captures, reviewer) {
             ${c.assetZone ? `<tr><td>ZONE / STREET</td><td>${c.assetZone}</td></tr>` : ""}
             ${c.assetErf ? `<tr><td>ERF / UNIT</td><td class="mono">${c.assetErf}</td></tr>` : ""}
             ${c.assetAccessNotes ? `<tr><td>ACCESS</td><td>${c.assetAccessNotes}</td></tr>` : ""}
+            ${(() => {
+              const s = serviceStatus(c.assetType, c.assetLastService);
+              if (!s && !SERVICEABLE_TYPES.has(c.assetType)) return "";
+              if (!s) return `<tr><td>SERVICE</td><td class="overdue">NO SERVICE DATE RECORDED</td></tr>`;
+              return `<tr><td>LAST SERVICE</td><td class="mono">${c.assetLastService}</td></tr>
+                      <tr><td>NEXT DUE</td><td class="${s.overdue ? "overdue" : "indate"}">${s.dueDate}${s.overdue ? ` \u2014 OVERDUE BY ${s.monthsOverdue} MONTH${s.monthsOverdue === 1 ? "" : "S"}` : ""}</td></tr>`;
+            })()}
             <tr><td>CAPTURED</td><td>${c.timestamp.date} · ${c.tech || "—"}</td></tr>
           </table>
         </div>
@@ -752,6 +845,16 @@ function printAssetRegister(survey, captures, reviewer) {
       .cardmeta td { padding:2px 0; vertical-align:top; }
       .cardmeta td:first-child { color:#5B6570; width:120px; font-size:9.5px; letter-spacing:0.3px; padding-top:3px; }
       .mono { font-family:'Courier New', monospace; }
+      .overdue { color:#D6485A; font-weight:700; }
+      .servicebox { border:1px solid #DCE3E8; border-left:4px solid #D6485A; border-radius:8px; padding:12px 16px; margin-bottom:14px; }
+      .servicehead { font-size:11px; font-weight:700; color:#2B2F33; letter-spacing:0.4px; margin-bottom:8px; }
+      .servicerow { display:flex; gap:8px; margin-bottom:6px; }
+      .pill { font-size:10.5px; font-weight:700; padding:3px 10px; border-radius:999px; }
+      .pill.ok { background:#E4F5EE; color:#1B9C6E; }
+      .pill.bad { background:#FBE6E9; color:#D6485A; }
+      .pill.warn { background:#FBF0DE; color:#D98A22; }
+      .servicelist { font-size:10.5px; color:#5B6570; margin-top:5px; line-height:1.5; }
+      .indate { color:#1B9C6E; font-weight:700; }
       .footer { margin-top:24px; font-size:11px; color:#5B6570; }
       @media print { .no-print { display:none; } }
     </style></head><body>
@@ -766,6 +869,7 @@ function printAssetRegister(survey, captures, reviewer) {
         <div><b>${captures.length}</b><span>ASSETS MAPPED</span></div>
         ${Object.entries(byCategory).map(([cat, items]) => `<div><b>${items.length}</b><span>${cat}</span></div>`).join("")}
       </div>
+      ${serviceBanner}
       ${sections}
       <div class="footer">Coordinates are WGS84 decimal degrees. Generated by THYNK-H2O Field Capture.</div>
       <div class="no-print" style="margin-top:24px;">
@@ -1241,12 +1345,14 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           setCaptureError("The register wasn't clearly legible — please check the photo or type the reading manually.");
         }
       } else if (type === "asset") {
-        // Asset mapping — photo, GPS, and AI-read serial where visible
+        // Asset mapping — photo, GPS, AI-read serial and service date where visible
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
         let serial = "";
+        let lastService = "";
         try {
-          const extracted = await extractWithVision(photo, `This is a photograph of an estate infrastructure asset (a meter, valve, kiosk, hydrant, chamber, telemetry device or similar). Respond with ONLY a JSON object: {"serial": string|null}. Return the serial or device number if one is clearly legible on the asset, otherwise null. Do not guess.`);
+          const extracted = await extractWithVision(photo, `This is a photograph of an estate infrastructure asset (a meter, valve, kiosk, hydrant, fire extinguisher, hose reel, chamber, telemetry device or similar). Respond with ONLY a JSON object: {"serial": string|null, "lastServiceDate": string|null}. Return the serial or device number if one is clearly legible on the asset, otherwise null. If a service label, inspection tag or certificate showing a service date is clearly legible, return that date as YYYY-MM-DD, otherwise null. Do not guess either value.`);
           serial = extracted.serial || "";
+          lastService = extracted.lastServiceDate || "";
         } catch (visionErr) {
           // silent — serial is optional and can be typed
         }
@@ -1275,6 +1381,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           assetZone: "",
           assetErf: "",
           assetAccessNotes: "",
+          assetLastService: lastService,
         });
       } else if (type === "amrAsset") {
         // AMR asset photo (MUC or repeater) — AI reads serial if legible, GPS at capture
@@ -1994,6 +2101,43 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                         <input value={pending.assetAccessNotes || ""} onChange={(e) => editField("assetAccessNotes", e.target.value.toUpperCase())} placeholder="GATE CODES, KEYS, DOGS, WHO TO CALL"
                           style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal }} />
                       </div>
+
+                      {SERVICEABLE_TYPES.has(pending.assetType) && (() => {
+                        const st = serviceStatus(pending.assetType, pending.assetLastService);
+                        return (
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
+                              DATE OF LAST SERVICE
+                            </div>
+                            <input
+                              type="date"
+                              value={pending.assetLastService || ""}
+                              onChange={(e) => editField("assetLastService", e.target.value)}
+                              style={{
+                                width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8,
+                                border: `1.5px solid ${st?.overdue ? C.flag : C.line}`,
+                                fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, color: C.charcoal
+                              }}
+                            />
+                            {st ? (
+                              <div style={{
+                                marginTop: 5, padding: "6px 9px", borderRadius: 7,
+                                background: st.overdue ? C.flagSoft : C.approveSoft,
+                                fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600,
+                                color: st.overdue ? C.flag : C.approve
+                              }}>
+                                {st.overdue
+                                  ? `OVERDUE BY ${st.monthsOverdue} MONTH${st.monthsOverdue === 1 ? "" : "S"} — was due ${st.dueDate}`
+                                  : `Next service due ${st.dueDate}`}
+                              </div>
+                            ) : (
+                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 4 }}>
+                                From the service label or certificate. Leave blank if unknown.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -2794,6 +2938,38 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     )}
                   </div>
                 ))}
+
+                {SERVICEABLE_TYPES.has(selected.assetType) && (() => {
+                  const st = serviceStatus(selected.assetType, selected.assetLastService);
+                  return (
+                    <div>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>
+                        DATE OF LAST SERVICE
+                      </div>
+                      {editMode ? (
+                        <input type="date" value={selected.assetLastService || ""}
+                          onChange={(e) => updateCapture(selected.id, { assetLastService: e.target.value })}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal }} />
+                      ) : (
+                        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: selected.assetLastService ? C.charcoal : C.charcoalSoft }}>
+                          {selected.assetLastService || "—"}
+                        </div>
+                      )}
+                      {st && (
+                        <div style={{
+                          marginTop: 5, padding: "5px 8px", borderRadius: 6, display: "inline-block",
+                          background: st.overdue ? C.flagSoft : C.approveSoft,
+                          fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700,
+                          color: st.overdue ? C.flag : C.approve
+                        }}>
+                          {st.overdue
+                            ? `SERVICE OVERDUE BY ${st.monthsOverdue} MONTH${st.monthsOverdue === 1 ? "" : "S"}`
+                            : `NEXT DUE ${st.dueDate}`}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
