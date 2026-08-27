@@ -1826,6 +1826,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
   };
 
   const [editMode, setEditMode] = useState(false);
+  const [zoomPhoto, setZoomPhoto] = useState(null);
   const updateCapture = (id, patch) => {
     setCaptures((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     setSelected((s) => (s && s.id === id ? { ...s, ...patch } : s));
@@ -2049,7 +2050,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
           alignItems: "center", justifyContent: "center", padding: 20, zIndex: 50
         }}>
           <div onClick={(e) => e.stopPropagation()} style={{
-            background: "#fff", borderRadius: 18, width: 420, maxWidth: "100%", padding: 22,
+            background: "#fff", borderRadius: 18, width: selected.type === "amr" ? 640 : 420, maxWidth: "100%", padding: 22,
             maxHeight: "88vh", overflowY: "auto"
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
@@ -2207,35 +2208,71 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
 
             {selected.type === "amr" && (selected.amrShots || []).length > 0 && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.charcoal, marginBottom: 8 }}>
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.charcoal, marginBottom: 4 }}>
                   Meters linked to this {selected.amrAssetType?.toLowerCase() || "asset"} ({selected.amrShots.reduce((n, s) => n + (s.meters || []).length, 0)})
                 </div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 9, flexWrap: "wrap" }}>
-                  {selected.amrShots.map((shot, i) => (
-                    <img key={i} src={shot.photo} alt={`Screenshot ${i + 1}`}
-                      style={{ width: 44, height: 58, objectFit: "cover", borderRadius: 6, border: `1px solid ${C.line}` }} />
-                  ))}
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginBottom: 10 }}>
+                  Tap a screenshot to view it full size and check the readings.
                 </div>
-                <div style={{ maxHeight: 240, overflowY: "auto", borderRadius: 9, border: `1px solid ${C.line}` }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
-                    <thead>
-                      <tr style={{ background: C.paper }}>
-                        <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SERIAL</th>
-                        <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>MODEL</th>
-                        <th style={{ textAlign: "right", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SIGNAL</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selected.amrShots.map((shot, si) =>
-                        (shot.meters || []).map((m, mi) => {
+
+                {selected.amrShots.map((shot, si) => (
+                  <div key={si} style={{ marginBottom: 16, borderRadius: 10, border: `1px solid ${C.line}`, overflow: "hidden" }}>
+                    <div style={{
+                      padding: "7px 10px", background: C.paper, display: "flex",
+                      justifyContent: "space-between", alignItems: "center"
+                    }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoal }}>
+                        SCREENSHOT {si + 1} · {(shot.meters || []).length} METERS
+                      </span>
+                      {shot.readingDate && (
+                        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft }}>
+                          {shot.readingDate}
+                        </span>
+                      )}
+                    </div>
+
+                    <div
+                      onClick={() => setZoomPhoto(shot.photo)}
+                      style={{
+                        position: "relative", cursor: "zoom-in", background: "#fff",
+                        borderBottom: `1px solid ${C.line}`
+                      }}>
+                      <img src={shot.photo} alt={`Screenshot ${si + 1}`}
+                        style={{ width: "100%", maxHeight: 420, objectFit: "contain", display: "block" }} />
+                      <div style={{
+                        position: "absolute", right: 8, bottom: 8, background: "rgba(43,47,51,0.75)",
+                        color: "#fff", borderRadius: 6, padding: "3px 8px",
+                        fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 600
+                      }}>
+                        Tap to enlarge
+                      </div>
+                    </div>
+
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ background: C.paper }}>
+                          <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SERIAL</th>
+                          <th style={{ textAlign: "left", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>MODEL</th>
+                          <th style={{ textAlign: "right", padding: "6px 8px", fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft }}>SIGNAL</th>
+                          {editMode && <th style={{ width: 22 }} />}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(shot.meters || []).map((m, mi) => {
                           const updateMeter = (patch) => {
                             const shots = selected.amrShots.map((s, i) =>
                               i !== si ? s : { ...s, meters: s.meters.map((mm, j) => (j === mi ? { ...mm, ...patch } : mm)) }
                             );
                             updateCapture(selected.id, { amrShots: shots });
                           };
+                          const removeMeter = () => {
+                            const shots = selected.amrShots.map((s, i) =>
+                              i !== si ? s : { ...s, meters: s.meters.filter((_, j) => j !== mi) }
+                            );
+                            updateCapture(selected.id, { amrShots: shots });
+                          };
                           return (
-                            <tr key={`${si}-${mi}`} style={{ borderTop: `1px solid ${C.line}` }}>
+                            <tr key={mi} style={{ borderTop: `1px solid ${C.line}` }}>
                               <td style={{ padding: "4px 6px" }}>
                                 {editMode ? (
                                   <input value={m.serial || ""} onChange={(e) => updateMeter({ serial: e.target.value })}
@@ -2249,7 +2286,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                                   <input value={m.model || ""} onChange={(e) => updateMeter({ model: e.target.value })}
                                     style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal }} />
                                 ) : (
-                                  <span style={{ color: C.charcoalSoft }}>{m.model || "—"}</span>
+                                  <span style={{ color: C.charcoalSoft }}>{m.model || "\u2014"}</span>
                                 )}
                               </td>
                               <td style={{ padding: "4px 6px", textAlign: "right" }}>
@@ -2257,16 +2294,40 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                                   <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })}
                                     style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal, textAlign: "right" }} />
                                 ) : (
-                                  <span style={{ color: C.charcoalSoft }}>{m.signal || "—"}</span>
+                                  <span style={{ color: C.charcoalSoft }}>{m.signal || "\u2014"}</span>
                                 )}
                               </td>
+                              {editMode && (
+                                <td style={{ padding: "4px 4px", textAlign: "center" }}>
+                                  <button onClick={removeMeter} style={{ border: "none", background: "none", cursor: "pointer", padding: 0 }}>
+                                    <X size={11} color={C.charcoalSoft} />
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                        })}
+                      </tbody>
+                    </table>
+
+                    {editMode && (
+                      <button
+                        onClick={() => {
+                          const shots = selected.amrShots.map((s, i) =>
+                            i !== si ? s : { ...s, meters: [...(s.meters || []), { serial: "", model: "", signal: "" }] }
+                          );
+                          updateCapture(selected.id, { amrShots: shots });
+                        }}
+                        style={{
+                          width: "100%", border: "none", borderTop: `1px solid ${C.line}`, background: "#fff",
+                          color: C.primary, cursor: "pointer", padding: "7px",
+                          fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 600
+                        }}>
+                        + Add missing meter
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 
@@ -2410,6 +2471,28 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {zoomPhoto && (
+        <div
+          onClick={() => setZoomPhoto(null)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(20,22,24,0.94)", zIndex: 100,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+            cursor: "zoom-out"
+          }}>
+          <img src={zoomPhoto} alt="Screenshot full size"
+            style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }} />
+          <button
+            onClick={(e) => { e.stopPropagation(); setZoomPhoto(null); }}
+            style={{
+              position: "absolute", top: 16, right: 16, width: 38, height: 38, borderRadius: 999,
+              border: "none", background: "rgba(255,255,255,0.15)", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center"
+            }}>
+            <X size={20} color="#fff" />
+          </button>
         </div>
       )}
     </div>
