@@ -188,25 +188,15 @@ const FIDO_SESSION_TYPES = [
 
 /* ---------- field task definitions (the hub) ---------- */
 const TASKS = {
-  meter: {
-    label: "Meter Survey",
-    blurb: "Photograph existing meters and capture readings and serials.",
+  meterwork: {
+    label: "Meter Work",
+    blurb: "Read existing meters, or replace and install new ones.",
     icon: Camera,
   },
   fido: {
     label: "FIDO Leak Analysis",
     blurb: "Ultrasonic AI leak detection — sensor deployments and FIDO session feedback.",
     icon: Radio,
-  },
-  sat: {
-    label: "SAT Survey",
-    blurb: "Site survey — photos, locations, and notes.",
-    icon: MapPin,
-  },
-  replacement: {
-    label: "Meter Replacement",
-    blurb: "Record old and new meter photos, serials, and readings at each position.",
-    icon: RotateCcw,
   },
   amr: {
     label: "AMR Survey",
@@ -217,6 +207,19 @@ const TASKS = {
     label: "Asset Mapping",
     blurb: "Map estate infrastructure — water, electrical, AMR and general assets with coordinates.",
     icon: LayoutGrid,
+  },
+};
+
+const METER_MODES = {
+  read: {
+    label: "READ METERS",
+    blurb: "Photograph each meter and capture its reading and serial.",
+    icon: Camera,
+  },
+  replace: {
+    label: "REPLACE METERS",
+    blurb: "Photograph the old meter out and the new meter in at each position.",
+    icon: RotateCcw,
   },
 };
 
@@ -261,6 +264,7 @@ const ASSET_CATEGORIES = {
     "STREET LIGHT",
     "IRRIGATION POINT",
     "SIGNAGE",
+    "OTHER",
   ],
 };
 
@@ -516,7 +520,10 @@ function safeFilename(name) {
 }
 
 function exportExcel(survey, captures, reviewer) {
-  const task = survey.taskType || "meter";
+  // Older surveys used separate "meter" and "replacement" task types
+  const rawTask = survey.taskType || "meterwork";
+  const task = rawTask === "meter" || rawTask === "replacement" ? "meterwork" : rawTask;
+  const meterMode = survey.meterMode || (rawTask === "replacement" ? "replace" : "read");
   const wb = XLSX.utils.book_new();
 
   // Fields every task shares
@@ -570,7 +577,7 @@ function exportExcel(survey, captures, reviewer) {
       status: STATUS_EXPORT_LABEL[c.status] || c.status,
     }));
     widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
-  } else if (task === "replacement") {
+  } else if (task === "meterwork" && meterMode === "replace") {
     sheetName = "Meter Replacements";
     fileSuffix = "meter_replacements";
     rows = captures.map((c) => ({
@@ -596,15 +603,6 @@ function exportExcel(survey, captures, reviewer) {
       ...trailing(c),
     }));
     widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
-  } else if (task === "sat") {
-    sheetName = "SAT Survey Points";
-    fileSuffix = "sat_survey";
-    rows = captures.map((c) => ({
-      ...common(c),
-      Notes: c.satNotes || "",
-      ...trailing(c),
-    }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 40 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else {
     sheetName = "Meter Readings";
     fileSuffix = "meter_survey";
@@ -781,7 +779,7 @@ function printAssetRegister(survey, captures, reviewer) {
 function printReport(survey, captures, reviewer, counts, pct) {
   const win = window.open("", "_blank", "width=900,height=1000");
   if (!win) return;
-  const TYPE_SHORT = { meter: "Meter", sensor: "Sensor", fido: "FIDO", sat: "SAT", replacement: "Replacement", amr: "AMR", consumption: "Profile" };
+  const TYPE_SHORT = { meter: "Meter", sensor: "Sensor", fido: "FIDO", replacement: "Replacement", amr: "AMR", asset: "Asset", consumption: "Profile" };
   const rows = captures.map((c) => {
     if (c.type === "amr") {
       const count = (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0);
@@ -964,8 +962,9 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
     listSurveyRecords()
       .then((recs) => {
         if (!cancelled) {
-          // only sites for the chosen task; older records without a task count as meter surveys
-          setPrevious(recs.filter((r) => (r.taskType || "meter") === task));
+          // Older records used separate "meter" and "replacement" task types
+          const normalise = (t) => (!t || t === "meter" || t === "replacement" ? "meterwork" : t);
+          setPrevious(recs.filter((r) => normalise(r.taskType) === task));
         }
       })
       .catch(() => {})
@@ -1004,6 +1003,7 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
     !survey.siteName && "Estate / Site Name",
     !survey.surveyName && "Survey Name",
     !survey.tech && "Technician Name",
+    task === "meterwork" && !survey.meterMode && "Read or Replace",
   ].filter(Boolean);
   const canStart = missing.length === 0;
 
@@ -1088,6 +1088,46 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
         </button>
       </div>
 
+      {task === "meterwork" && (
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft, display: "block", marginBottom: 8 }}>
+            What kind of work is this?
+          </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {Object.entries(METER_MODES).map(([id, m]) => {
+              const active = survey.meterMode === id;
+              const Icon = m.icon;
+              return (
+                <button key={id}
+                  onClick={() => setSurvey((s) => ({ ...s, meterMode: id }))}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12, textAlign: "left",
+                    padding: "13px 14px", borderRadius: 11, cursor: "pointer",
+                    border: `1.5px solid ${active ? C.primary : C.line}`,
+                    background: active ? "#E7F2FE" : "#fff"
+                  }}>
+                  <div style={{
+                    width: 34, height: 34, borderRadius: 9, flexShrink: 0,
+                    background: active ? C.primary : C.paperDeep,
+                    display: "flex", alignItems: "center", justifyContent: "center"
+                  }}>
+                    <Icon size={16} color={active ? "#fff" : C.charcoalSoft} />
+                  </div>
+                  <div>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontWeight: 700, fontSize: 12.5, color: active ? C.primary : C.charcoal }}>
+                      {m.label}
+                    </div>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft, marginTop: 1 }}>
+                      {m.blurb}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <button
         disabled={!canStart}
         onClick={onStart}
@@ -1142,7 +1182,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
       galleryInputRef.current?.click();
       return;
     }
-    // Meters, sensor installs, and SAT site photos: choose camera or gallery.
+    // Meters, sensor installs and asset photos: choose camera or gallery.
     setChooseFor(type);
   };
 
@@ -1350,27 +1390,120 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
         } else if (!reading || !serial) {
           setCaptureError("Some details weren't clearly legible — please check and complete them.");
         }
-      } else if (type === "sat") {
-        // SAT survey — site photo with GPS and notes
+      } else if (type === "amrAsset") {
+        // AMR asset photo (MUC or repeater) — AI reads serial if legible, GPS at capture
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
-        setPending({
-          id: Date.now(),
-          type: "sat",
-          position: position.trim(),
-          reading: "",
-          serial: "",
-          confidence: 0,
-          gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
-          timestamp: nowStamp(),
-          status: "captured",
-          tech: survey.tech,
-          sentAt: null,
-          photo,
-          sensor: null,
-          consumption: null,
-          fido: null,
-          satNotes: "",
+        let serial = "";
+        try {
+          const extracted = await extractWithVision(photo, `This is a photograph of AMR telemetry equipment (a MUC, concentrator, or signal repeater) mounted in the field. Respond with ONLY a JSON object: {"serial": string|null}. Return the device serial number if one is clearly legible on a label or the device body, otherwise null. Do not guess.`);
+          serial = extracted.serial || "";
+        } catch (visionErr) {
+          // silent — serial can be typed manually
+        }
+        setPending((p) => {
+          const base = p || {
+            id: Date.now(),
+            type: "amr",
+            position: position.trim(),
+            reading: "",
+            serial: "",
+            confidence: 0,
+            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            timestamp: nowStamp(),
+            status: "needs_review",
+            tech: survey.tech,
+            sentAt: null,
+            photo: null,
+            sensor: null,
+            consumption: null,
+            fido: null,
+            oldMeter: null,
+            newMeter: null,
+            amrAssetType: "MUC",
+            amrSerial: "",
+            amrShots: [],
+          };
+          return {
+            ...base,
+            photo,
+            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            amrSerial: base.amrSerial || serial,
+          };
         });
+        if (!serial) {
+          setCaptureError("Serial not readable from the photo — please type it in below.");
+        }
+      } else if (type === "amrShot") {
+        // Handheld reader screenshot — AI extracts the meter list
+        const photo = await loadDownscaledPhoto(file, 1200);
+        let extracted = { meters: [], concentratorId: null };
+        let aiFailed = false;
+        try {
+          extracted = await extractWithVision(photo, AMR_SCREENSHOT_PROMPT);
+        } catch (visionErr) {
+          aiFailed = true;
+        }
+        setPending((p) => {
+          if (!p) return p;
+          const shots = [...(p.amrShots || []), {
+            photo,
+            meters: extracted.meters || [],
+            concentratorId: extracted.concentratorId || null,
+            readingDate: extracted.readingDate || null,
+          }];
+          return { ...p, amrShots: shots };
+        });
+        if (aiFailed) {
+          setCaptureError("Couldn't read that screenshot — try a clearer capture.");
+        }
+      } else if (type === "oldMeter" || type === "newMeter") {
+        // Meter replacement — old meter out, new meter in, sharing one GPS at the position
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        let reading = "";
+        let serial = "";
+        let confidence = 0;
+        let aiFailed = false;
+        try {
+          const extracted = await extractWithVision(photo, METER_PROMPT);
+          reading = extracted.reading || "";
+          serial = extracted.serial || "";
+          confidence = Math.max(0, Math.min(100, Number(extracted.confidence) || 0));
+        } catch (visionErr) {
+          aiFailed = true;
+        }
+        const side = { photo, reading, serial, confidence };
+        setPending((p) => {
+          const base = p || {
+            id: Date.now(),
+            type: "replacement",
+            position: position.trim(),
+            reading: "",
+            serial: "",
+            confidence: 0,
+            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            timestamp: nowStamp(),
+            status: "needs_review",
+            tech: survey.tech,
+            sentAt: null,
+            photo: null,
+            sensor: null,
+            consumption: null,
+            fido: null,
+            oldMeter: null,
+            newMeter: null,
+          };
+          return {
+            ...base,
+            // keep the first GPS captured at this position for both meters
+            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            [type]: side,
+          };
+        });
+        if (aiFailed) {
+          setCaptureError("AI couldn't read this meter — type the serial and reading manually.");
+        } else if (!reading || !serial) {
+          setCaptureError("Some details weren't clearly legible — please check and complete them.");
+        }
       } else if (type === "sensor") {
         // Photo of where the sensor is deployed — no AI needed on the installation photo itself
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
@@ -1479,7 +1612,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
               }}>
                 <div style={{ width: 34, height: 4, borderRadius: 99, background: C.line, margin: "0 auto 12px" }} />
                 <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 700, color: C.charcoal, marginBottom: 10, textAlign: "center" }}>
-                  {chooseFor === "meter" ? "Meter photo" : chooseFor === "sat" ? "Site photo" : "Installation photo"}
+                  {chooseFor === "meter" ? "Meter photo" : chooseFor === "asset" ? "Asset photo" : "Installation photo"}
                 </div>
                 <button onClick={() => chooseSource("camera")} style={{
                   width: "100%", padding: "13px", borderRadius: 10, border: "none", cursor: "pointer",
@@ -1574,7 +1707,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     </>
                   )}
                 </div>
-              ) : task === "replacement" ? (
+              ) : (task === "meterwork" && survey.meterMode === "replace") ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                   <button
                     onClick={() => openPicker("oldMeter")}
@@ -1614,7 +1747,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 </div>
               ) : (
               <div
-                onClick={() => openPicker(task === "meter" ? "meter" : task === "sat" ? "sat" : "sensor")}
+                onClick={() => openPicker(task === "meterwork" ? "meter" : "sensor")}
                 style={{
                   height: 130, borderRadius: 14, cursor: stage === "idle" ? "pointer" : "default",
                   border: `2px dashed ${position.trim() ? C.primary : C.line}`,
@@ -1633,7 +1766,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                   <>
                     {task === "fido" ? <Radio size={26} color={position.trim() ? C.primary : C.charcoalSoft} /> : <Camera size={26} color={position.trim() ? C.primary : C.charcoalSoft} />}
                     <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: position.trim() ? C.primary : C.charcoalSoft }}>
-                      {task === "meter" ? "Capture Meter" : task === "sat" ? "Site Photo" : "Sensor Deployment"}
+                      {task === "meterwork" ? "Capture Meter" : "Sensor Deployment"}
                     </span>
                   </>
                 )}
@@ -1673,7 +1806,6 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 {pending.type === "meter" && <><Camera size={14} /> Meter Reading</>}
                 {pending.type === "sensor" && <><Radio size={14} /> Sensor Deployment</>}
                 {pending.type === "fido" && <><Activity size={14} /> FIDO Feedback</>}
-                {pending.type === "sat" && <><MapPin size={14} /> SAT Survey Point</>}
                 {pending.type === "replacement" && <><RotateCcw size={14} /> Meter Replacement</>}
                 {pending.type === "amr" && <><Radio size={14} /> {pending.amrAssetType || "AMR"} Survey</>}
                 {pending.type === "asset" && <><LayoutGrid size={14} /> {pending.assetType || "Asset Mapping"}</>}
@@ -2095,36 +2227,6 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 </>
               )}
 
-              {/* ---- SAT SURVEY: site photo + GPS + notes ---- */}
-              {pending.type === "sat" && (
-                <>
-                  <PhotoWell position={pending.position} timestamp={pending.timestamp} gps={pending.gps} photo={pending.photo} />
-                  <div style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 8,
-                    padding: "7px 10px", borderRadius: 8, background: C.paper
-                  }}>
-                    <MapPin size={12} color={pending.gps?.lat !== "Unknown" ? C.approve : C.review} />
-                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, fontWeight: 600 }}>
-                      {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
-                    </span>
-                  </div>
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600, color: C.charcoalSoft, marginBottom: 4 }}>NOTES</div>
-                    <textarea
-                      value={pending.satNotes || ""}
-                      onChange={(e) => editField("satNotes", e.target.value)}
-                      placeholder="What did you find at this point?"
-                      rows={3}
-                      style={{
-                        width: "100%", boxSizing: "border-box", padding: "9px 11px", borderRadius: 9,
-                        border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 13,
-                        color: C.charcoal, outline: "none", resize: "vertical"
-                      }}
-                    />
-                  </div>
-                </>
-              )}
-
               {/* ---- FIDO FEEDBACK: the screenshot + session type selection ---- */}
               {pending.type === "fido" && pending.fido && (
                 <>
@@ -2477,7 +2579,6 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {(!c.type || c.type === "meter") && <>{c.reading ? `${c.reading} m³` : "no reading"}</>}
                     {c.type === "sensor" && <><Radio size={10} color={C.primary} /> Sensor</>}
                     {c.type === "fido" && <><Activity size={10} color={C.primary} /> FIDO</>}
-                    {c.type === "sat" && <><MapPin size={10} color={C.primary} /> SAT</>}
                     {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
                     {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
                     {c.type === "asset" && <><LayoutGrid size={10} color={CATEGORY_COLOURS[c.assetCategory] || C.primary} /> {c.assetType || "Asset"}</>}
@@ -2627,23 +2728,6 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
                     <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Position</div>
                     <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>{selected.position}</div>
-                  </div>
-                </>
-              )}
-              {selected.type === "sat" && (
-                <>
-                  <div style={{ background: C.paper, borderRadius: 9, padding: "8px 10px" }}>
-                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Type</div>
-                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, color: C.charcoal, fontWeight: 600 }}>SAT Survey</div>
-                  </div>
-                  <div style={{ background: editMode ? "#fff" : C.paper, border: editMode ? `1.5px solid ${C.primary}` : "none", borderRadius: 9, padding: "8px 10px" }}>
-                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Notes</div>
-                    {editMode ? (
-                      <input value={selected.satNotes || ""} onChange={(e) => updateCapture(selected.id, { satNotes: e.target.value })}
-                        style={{ width: "100%", border: "none", outline: "none", fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: C.charcoal, padding: 0, background: "transparent" }} />
-                    ) : (
-                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: C.charcoal }}>{selected.satNotes || "—"}</div>
-                    )}
                   </div>
                 </>
               )}
@@ -3159,7 +3243,7 @@ export default function App() {
   const [role, setRole] = useState(null);
   const [username, setUsername] = useState("");
   const unlocked = !!role;
-  const [task, setTask] = useState(null); // null (hub) | "meter" | "fido" | "sat"
+  const [task, setTask] = useState(null); // null (hub) | "meterwork" | "fido" | "amr" | "assets"
   const [screen, setScreen] = useState("setup");
   const [survey, setSurvey] = useState({ id: null, siteName: "", address: "", surveyName: "", tech: "", gps: null });
   const [captures, setCaptures] = useState([]);
@@ -3206,7 +3290,7 @@ export default function App() {
 
   const switchTask = () => {
     setTask(null);
-    setSurvey({ id: null, siteName: "", address: "", surveyName: "", tech: "", gps: null, taskType: null });
+    setSurvey({ id: null, siteName: "", address: "", surveyName: "", tech: "", gps: null, taskType: null, meterMode: null });
     setCaptures([]);
     setSyncStatus("idle");
     setScreen("setup");
@@ -3217,7 +3301,15 @@ export default function App() {
     setResuming(true);
     try {
       const record = await fetchSurveyRecord(summary.key);
-      setSurvey({ id: summary.key, ...record.survey });
+      const s = record.survey || {};
+      // Older surveys used separate task types — map them onto the merged Meter Work task
+      const legacy = s.taskType === "meter" || s.taskType === "replacement";
+      setSurvey({
+        id: summary.key,
+        ...s,
+        taskType: legacy ? "meterwork" : (s.taskType || task),
+        meterMode: s.meterMode || (s.taskType === "replacement" ? "replace" : s.taskType === "meter" ? "read" : undefined),
+      });
       setCaptures(record.captures || []);
       setScreen("capture");
     } catch (err) {
@@ -3270,7 +3362,7 @@ export default function App() {
                 background: "#fff", padding: "4px 10px", borderRadius: 999, cursor: "pointer",
                 fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 600, color: C.charcoal
               }}>
-                {TASKS[task]?.label} <X size={11} color={C.charcoalSoft} />
+                {TASKS[task]?.label}{task === "meterwork" && survey.meterMode ? ` · ${survey.meterMode === "replace" ? "Replace" : "Read"}` : ""} <X size={11} color={C.charcoalSoft} />
               </button>
             )}
             {task && <SyncBadge status={syncStatus} />}
