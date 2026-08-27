@@ -2353,13 +2353,14 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
   };
   const pct = counts.total ? Math.round((counts.approved / counts.total) * 100) : 0;
 
-  const updateStatus = (id, status) => {
-    setCaptures((cs) => cs.map((c) => (c.id === id ? { ...c, status } : c)));
-    setSelected((s) => (s ? { ...s, status } : s));
-  };
-
   const [editMode, setEditMode] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const flashToast = (text, tone) => {
+    setToast({ text, tone });
+    setTimeout(() => setToast(null), 2200);
+  };
   const updateCapture = (id, patch) => {
     setCaptures((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
     setSelected((s) => (s && s.id === id ? { ...s, ...patch } : s));
@@ -3034,11 +3035,19 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               </div>
             ) : (
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => updateStatus(selected.id, "flagged")} style={{
-                  flex: 1, padding: "11px", borderRadius: 10, border: `1.5px solid ${C.flag}`, background: "#fff",
-                  color: C.flag, fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                }}>
+                <button
+                  onClick={() => {
+                    setEditMode(false);
+                    setCaptures((cs) => cs.map((c) => (c.id === selected.id ? { ...c, status: "flagged" } : c)));
+                    flashToast(`${selected.position} flagged`, C.flag);
+                    setZoomPhoto(null);
+                    setSelected(null);
+                  }}
+                  style={{
+                    flex: 1, padding: "11px", borderRadius: 10, border: `1.5px solid ${C.flag}`, background: "#fff",
+                    color: C.flag, fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                  }}>
                   <Flag size={14} /> Flag
                 </button>
                 <button onClick={() => setEditMode((m) => !m)} style={{
@@ -3051,16 +3060,36 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                 }}>
                   {editMode ? <Check size={14} /> : <Edit3 size={14} />} {editMode ? "Done" : "Edit"}
                 </button>
-                <button onClick={() => { setEditMode(false); updateStatus(selected.id, "approved"); }} style={{
-                  flex: 1, padding: "11px", borderRadius: 10, border: "none", background: C.approve,
-                  color: "#fff", fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                }}>
+                <button
+                  onClick={() => {
+                    setEditMode(false);
+                    setCaptures((cs) => cs.map((c) => (c.id === selected.id ? { ...c, status: "approved" } : c)));
+                    flashToast(`${selected.position} approved`, C.approve);
+                    setZoomPhoto(null);
+                    setSelected(null);
+                  }}
+                  style={{
+                    flex: 1, padding: "11px", borderRadius: 10, border: "none", background: C.approve,
+                    color: "#fff", fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                  }}>
                   <Check size={14} /> Approve
                 </button>
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+          background: C.charcoal, color: "#fff", borderRadius: 999, padding: "10px 20px",
+          fontFamily: "'Inter',sans-serif", fontSize: 13, fontWeight: 600, zIndex: 200,
+          display: "flex", alignItems: "center", gap: 8,
+          boxShadow: "0 6px 20px -6px rgba(43,47,51,0.5)"
+        }}>
+          <Check size={14} color={toast.tone} /> {toast.text}
         </div>
       )}
 
