@@ -460,80 +460,125 @@ function safeFilename(name) {
 }
 
 function exportExcel(survey, captures, reviewer) {
-  const TYPE_LABEL = { meter: "Meter Reading", sensor: "Sensor Deployment", fido: "FIDO Feedback", sat: "SAT Survey", replacement: "Meter Replacement", amr: "AMR Survey", consumption: "Consumption Profile" };
-  const rows = captures.map((c) => ({
+  const task = survey.taskType || "meter";
+  const wb = XLSX.utils.book_new();
+
+  // Fields every task shares
+  const common = (c) => ({
     Site: survey.siteName || "",
     Survey: survey.surveyName || "",
     "Position Name": c.position,
-    Type: TYPE_LABEL[c.type] || "Meter Reading",
-    "FIDO Session Type": c.fido?.sessionType || "",
-    "SAT Notes": c.satNotes || "",
-    "AMR Asset Type": c.amrAssetType || "",
-    "AMR Serial": c.amrSerial || "",
-    "AMR Meters Linked": c.type === "amr" ? (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0) : "",
-    "Old Meter Serial": c.oldMeter?.serial || "",
-    "Old Meter Reading (m³)": c.oldMeter?.reading || "",
-    "New Meter Serial": c.newMeter?.serial || "",
-    "New Meter Reading (m³)": c.newMeter?.reading || "",
-    "Meter Reading (m³)": c.reading,
-    "Serial Number": c.serial,
+  });
+  const trailing = (c) => ({
     Date: c.timestamp.date,
     Time: c.timestamp.time,
-    GPS: `${c.gps.lat}, ${c.gps.lng}`,
+    GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
     Technician: c.tech || "",
     Reviewer: c.status === "approved" ? (reviewer || "") : "",
-    "Confidence %": c.confidence,
     Status: STATUS_EXPORT_LABEL[c.status] || c.status,
-    "Sensor Session ID": c.sensor?.sessionId || "",
-    "Sensor Device ID": c.sensor?.deviceId || "",
-    "Sensor Signal": c.sensor?.signalStrength || "",
-    "Sensor Battery": c.sensor?.batteryVoltage || "",
-    "Consumption Date Range": c.consumption?.dateRange || "",
-    "Consumption Notes": c.consumption?.notes || "",
-    "Photo Filename": `${safeFilename(survey.surveyName)}_${safeFilename(c.position)}.jpg`,
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws["!cols"] = [
-    { wch: 18 }, { wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
-    { wch: 12 }, { wch: 9 }, { wch: 22 }, { wch: 16 }, { wch: 16 },
-    { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
-    { wch: 12 }, { wch: 20 }, { wch: 30 }, { wch: 26 },
-  ];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Meter Captures");
+  });
 
-  // Second sheet: every meter seen by each MUC/repeater, one row per meter
-  const amrRows = [];
-  captures.filter((c) => c.type === "amr").forEach((c) => {
-    (c.amrShots || []).forEach((shot) => {
-      (shot.meters || []).forEach((m) => {
-        amrRows.push({
-          Site: survey.siteName || "",
-          Position: c.position,
-          "Asset Type": c.amrAssetType || "",
-          "Asset Serial": c.amrSerial || "",
-          "Concentrator ID": shot.concentratorId || "",
-          "Meter Serial": m.serial || "",
-          "Meter Model": m.model || "",
-          "Signal Strength": m.signal || "",
-          "Reading Date": shot.readingDate || c.timestamp.date,
-          GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
-          Date: c.timestamp.date,
-          Technician: c.tech || "",
+  let rows = [];
+  let widths = [];
+  let sheetName = "Captures";
+  let fileSuffix = "report";
+
+  if (task === "amr") {
+    sheetName = "AMR Assets";
+    fileSuffix = "amr_survey";
+    rows = captures.map((c) => ({
+      ...common(c),
+      "Asset Type": c.amrAssetType || "",
+      "Asset Serial": c.amrSerial || "",
+      "Meters Linked": (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0),
+      ...trailing(c),
+    }));
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else if (task === "replacement") {
+    sheetName = "Meter Replacements";
+    fileSuffix = "meter_replacements";
+    rows = captures.map((c) => ({
+      ...common(c),
+      "Old Meter Serial": c.oldMeter?.serial || "",
+      "Old Meter Reading (m\u00b3)": c.oldMeter?.reading || "",
+      "New Meter Serial": c.newMeter?.serial || "",
+      "New Meter Reading (m\u00b3)": c.newMeter?.reading || "",
+      ...trailing(c),
+    }));
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else if (task === "fido") {
+    sheetName = "FIDO Deployments";
+    fileSuffix = "fido_leak_analysis";
+    rows = captures.map((c) => ({
+      ...common(c),
+      "Capture Type": c.type === "sensor" ? "Sensor Deployment" : "FIDO Feedback",
+      "Session Type": c.fido?.sessionType || "",
+      "Bug / Sensor Serial": c.sensor?.deviceId || "",
+      "Session ID": c.sensor?.sessionId || "",
+      "Signal": c.sensor?.signalStrength || "",
+      "Battery": c.sensor?.batteryVoltage || "",
+      ...trailing(c),
+    }));
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 24 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else if (task === "sat") {
+    sheetName = "SAT Survey Points";
+    fileSuffix = "sat_survey";
+    rows = captures.map((c) => ({
+      ...common(c),
+      Notes: c.satNotes || "",
+      ...trailing(c),
+    }));
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 40 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else {
+    sheetName = "Meter Readings";
+    fileSuffix = "meter_survey";
+    rows = captures.map((c) => ({
+      ...common(c),
+      "Serial Number": c.serial || "",
+      "Meter Reading (m\u00b3)": c.reading || "",
+      "AI Confidence %": c.confidence,
+      ...trailing(c),
+    }));
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 15 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  }
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = widths;
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+  // AMR surveys get a second sheet: one row per linked meter
+  if (task === "amr") {
+    const amrRows = [];
+    captures.forEach((c) => {
+      (c.amrShots || []).forEach((shot) => {
+        (shot.meters || []).forEach((m) => {
+          amrRows.push({
+            Site: survey.siteName || "",
+            Position: c.position,
+            "Asset Type": c.amrAssetType || "",
+            "Asset Serial": c.amrSerial || "",
+            "Concentrator ID": shot.concentratorId || "",
+            "Meter Serial": m.serial || "",
+            "Meter Model": m.model || "",
+            "Signal Strength": m.signal || "",
+            "Reading Date": shot.readingDate || c.timestamp.date,
+            GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
+            Technician: c.tech || "",
+          });
         });
       });
     });
-  });
-  if (amrRows.length) {
-    const amrWs = XLSX.utils.json_to_sheet(amrRows);
-    amrWs["!cols"] = [
-      { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
-      { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 22 }, { wch: 12 }, { wch: 14 },
-    ];
-    XLSX.utils.book_append_sheet(wb, amrWs, "AMR Linked Meters");
+    if (amrRows.length) {
+      const amrWs = XLSX.utils.json_to_sheet(amrRows);
+      amrWs["!cols"] = [
+        { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
+        { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 14 },
+      ];
+      XLSX.utils.book_append_sheet(wb, amrWs, "Linked Meters");
+    }
   }
 
-  XLSX.writeFile(wb, `${safeFilename(survey.surveyName)}_meter_capture_report.xlsx`);
+  XLSX.writeFile(wb, `${safeFilename(survey.surveyName)}_${fileSuffix}.xlsx`);
 }
 
 function printReport(survey, captures, reviewer, counts, pct) {
