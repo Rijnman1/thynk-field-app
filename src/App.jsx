@@ -218,6 +218,91 @@ const FIDO_SESSION_TYPES = [
   "FIDO Correlation Results",
 ];
 
+/* ---------- FIDO 2 ---------- */
+
+/* The sensor register. Add new serials here as the fleet grows. */
+const BUG_REGISTER = [
+  "B01:41805", "B01:41810", "B01:41811", "B01:41847",
+  "B01:42253", "B01:42254", "B01:42258", "B01:42259",
+  "B01:42260", "B01:42263", "B01:42264", "B01:42265",
+  "B01:42269", "B01:42270", "B01:42274", "B01:42275",
+];
+
+/* What a bug can physically be deployed on. */
+const FIDO_DEPLOY_ASSETS = [
+  "VALVE",
+  "WATER METER",
+  "FIRE HYDRANT",
+  "VALVE CHAMBER",
+  "PUMP",
+  "INDIVIDUAL UNIT METER",
+  "OTHER",
+];
+
+/* Session modes offered by the FIDO app at deployment. */
+const FIDO_MODES = [
+  "START SESSION",
+  "SOUNDING LITE",
+  "CONSUMPTION PROFILING",
+];
+
+/* Findings recorded at retrieval. */
+const FIDO_OUTCOMES = {
+  "NO LEAK": { colour: "#1B9C6E", soft: "#E4F5EE" },
+  "SUSPECTED LEAK": { colour: "#D98A22", soft: "#FBF0DE" },
+  "CONFIRMED LEAK": { colour: "#D6485A", soft: "#FBE6E9" },
+  "INCONCLUSIVE": { colour: "#5B6570", soft: "#E8EDF1" },
+};
+
+const FIDO_DEPLOY_PROMPT = `This is a screenshot from the FIDO leak detection app showing a sensor session that has just been started. Extract only what is clearly legible. Respond with ONLY a JSON object, no other text, in this exact shape:
+{"sessionId": string|null, "bugSerial": string|null, "signalStrength": string|null, "batteryVoltage": string|null, "startedAt": string|null}
+Rules:
+- "sessionId": the session identifier shown (often a short code such as "7kvd").
+- "bugSerial": the sensor serial, usually in the form B01:XXXXX.
+- "signalStrength" and "batteryVoltage": as displayed, including units.
+- "startedAt": any date or time shown for the session start.
+Use null for anything not clearly visible. Do not guess.`;
+
+const FIDO_RESULT_PROMPT = `This is a screenshot of a FIDO leak detection results graph from a completed sensor session. Extract only what is clearly legible. Respond with ONLY a JSON object, no other text, in this exact shape:
+{"sessionId": string|null, "bugSerial": string|null, "dateRange": string|null, "minLevel": string|null, "notes": string|null}
+Rules:
+- "sessionId": the session identifier shown on the graph or its heading.
+- "bugSerial": the sensor serial if shown, usually B01:XXXXX.
+- "dateRange": the period the graph covers.
+- "minLevel": any minimum night level or lowest value labelled on the graph.
+- "notes": a short factual description of the visible trend, maximum 20 words. Describe only what the graph shows. Do not conclude whether there is a leak.
+Use null for anything not clearly visible. Do not guess values.`;
+
+/* Builds the current state of every sensor from the captures in a survey. */
+function buildBugStatus(captures) {
+  const status = {};
+  BUG_REGISTER.forEach((serial) => {
+    status[serial] = { serial, state: "AVAILABLE", deployment: null, retrieval: null };
+  });
+  // deployments first, most recent last so the latest wins
+  const sorted = [...captures].sort((a, b) => (a.id || 0) - (b.id || 0));
+  sorted.forEach((c) => {
+    if (c.type === "fido2_deploy" && c.bugSerial) {
+      if (!status[c.bugSerial]) status[c.bugSerial] = { serial: c.bugSerial, state: "AVAILABLE", deployment: null, retrieval: null };
+      status[c.bugSerial].state = "DEPLOYED";
+      status[c.bugSerial].deployment = c;
+      status[c.bugSerial].retrieval = null;
+    }
+  });
+  sorted.forEach((c) => {
+    if (c.type === "fido2_retrieve" && c.bugSerial && status[c.bugSerial]) {
+      status[c.bugSerial].state = "RETURNED";
+      status[c.bugSerial].retrieval = c;
+    }
+  });
+  return status;
+}
+
+const daysSince = (id) => {
+  if (!id) return 0;
+  return Math.max(0, Math.floor((Date.now() - id) / (1000 * 60 * 60 * 24)));
+};
+
 /* ---------- field task definitions (the hub) ---------- */
 const TASKS = {
   meterwork: {
@@ -228,6 +313,11 @@ const TASKS = {
   fido: {
     label: "FIDO Leak Analysis",
     blurb: "Ultrasonic AI leak detection — sensor deployments and FIDO session feedback.",
+    icon: Radio,
+  },
+  fido2: {
+    label: "FIDO 2",
+    blurb: "Deploy and retrieve leak sensors, with outcomes linked by bug serial.",
     icon: Radio,
   },
   amr: {
@@ -881,6 +971,34 @@ function exportExcel(survey, captures, reviewer) {
       ...trailing(c),
     }));
     widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 13 }, { wch: 26 }, { wch: 30 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+  } else if (task === "fido2") {
+    sheetName = "FIDO Sensor Log";
+    fileSuffix = "fido_leak_analysis";
+    const byBug = buildBugStatus(captures);
+    rows = captures
+      .filter((c) => c.type === "fido2_deploy" || c.type === "fido2_retrieve")
+      .map((c) => {
+        const b = byBug[c.bugSerial];
+        const dep = b?.deployment;
+        const ret = b?.retrieval;
+        const a = (c.sessionId || "").trim().toLowerCase();
+        const g = (c.resultSessionId || "").trim().toLowerCase();
+        return {
+          ...common(c),
+          "Stage": c.type === "fido2_deploy" ? "DEPLOYED" : "RETRIEVED",
+          "Bug Serial": c.bugSerial || "",
+          "Deployed On": c.deployAsset || "",
+          "Session Mode": c.fidoMode || "",
+          "Session ID": c.sessionId || "",
+          "Session ID On Graph": c.resultSessionId || "",
+          "ID Match": c.type === "fido2_retrieve" ? (a && g ? (a === g ? "MATCH" : "MISMATCH") : "NOT CONFIRMED") : "",
+          "Days Deployed": c.type === "fido2_retrieve" ? (c.deployedDays ?? "") : (dep && !ret ? daysSince(dep.id) : ""),
+          "Finding": c.outcome || "",
+          "Note": c.outcomeNote || "",
+          ...trailing(c),
+        };
+      });
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 21 }, { wch: 13 }, { wch: 19 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "fido") {
     sheetName = "FIDO Deployments";
     fileSuffix = "fido_leak_analysis";
@@ -924,6 +1042,45 @@ function exportExcel(survey, captures, reviewer) {
   const ws = XLSX.utils.json_to_sheet(rows);
   ws["!cols"] = widths;
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+  // FIDO 2 gets a findings sheet: one row per sensor, deployment paired with retrieval
+  if (task === "fido2") {
+    const status = buildBugStatus(captures);
+    const findingRows = Object.values(status)
+      .filter((b) => b.deployment)
+      .map((b) => {
+        const d = b.deployment;
+        const r = b.retrieval;
+        const a = (d.sessionId || "").trim().toLowerCase();
+        const g = (r?.resultSessionId || "").trim().toLowerCase();
+        return {
+          Site: survey.siteName || "",
+          "Bug Serial": b.serial,
+          "Deployed On": d.deployAsset || "",
+          Position: d.position || "",
+          Latitude: d.gps?.lat && d.gps.lat !== "Unknown" ? d.gps.lat : "",
+          Longitude: d.gps?.lng && d.gps.lng !== "Unknown" ? d.gps.lng : "",
+          "Session Mode": d.fidoMode || "",
+          "Session ID": d.sessionId || "",
+          "Deployed": d.timestamp?.date || "",
+          "Retrieved": r?.timestamp?.date || "",
+          "Days Out": r ? (r.deployedDays ?? "") : daysSince(d.id),
+          "ID Match": r ? (a && g ? (a === g ? "MATCH" : "MISMATCH") : "NOT CONFIRMED") : "",
+          Finding: r?.outcome || (r ? "" : "STILL DEPLOYED"),
+          Note: r?.outcomeNote || "",
+          Technician: d.tech || "",
+        };
+      });
+    if (findingRows.length) {
+      const fWs = XLSX.utils.json_to_sheet(findingRows);
+      fWs["!cols"] = [
+        { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 13 }, { wch: 13 },
+        { wch: 21 }, { wch: 14 }, { wch: 13 }, { wch: 13 }, { wch: 11 }, { wch: 15 },
+        { wch: 18 }, { wch: 34 }, { wch: 14 },
+      ];
+      XLSX.utils.book_append_sheet(wb, fWs, "Leak Findings");
+    }
+  }
 
   // AMR surveys get a second sheet: one row per linked meter
   if (task === "amr") {
@@ -1636,6 +1793,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
   const [showException, setShowException] = useState(false);
+  const [fidoMode, setFidoMode] = useState("deploy");
+  const [pendingBug, setPendingBug] = useState("");
 
   const previousForPosition = position.trim()
     ? lookupPrevious(survey.previousReadings, position, "")
@@ -1691,8 +1850,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
       return;
     }
     setCaptureError("");
-    // FIDO feedback and AMR reader screenshots come from the gallery.
-    if (type === "fido" || type === "amrShot") {
+    // Screenshots come from the gallery.
+    if (type === "fido" || type === "amrShot" || type === "fido2Session" || type === "fido2Result") {
       pickTypeRef.current = type;
       galleryInputRef.current?.click();
       return;
@@ -1755,6 +1914,59 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
         } else if (!reading) {
           setCaptureError("The register wasn't clearly legible — please check the photo or type the reading manually.");
         }
+      } else if (type === "fido2Deploy") {
+        // FIDO 2 deployment photo — where the bug is physically placed
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        setPending((p) => ({
+          ...(p || {}),
+          id: p?.id || Date.now(),
+          type: "fido2_deploy",
+          position: position.trim(),
+          reading: "",
+          serial: "",
+          confidence: 0,
+          gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+          timestamp: p?.timestamp || nowStamp(),
+          status: "needs_review",
+          tech: survey.tech,
+          sentAt: null,
+          photo,
+          bugSerial: p?.bugSerial || "",
+          deployAsset: p?.deployAsset || "",
+          fidoMode: p?.fidoMode || "",
+          sessionId: p?.sessionId || "",
+          sessionShot: p?.sessionShot || null,
+        }));
+      } else if (type === "fido2Session") {
+        // FIDO 2 session screenshot — AI reads the session ID
+        const photo = await loadDownscaledPhoto(file, 1100);
+        let ex = {};
+        let aiFailed = false;
+        try {
+          ex = await extractWithVision(photo, FIDO_DEPLOY_PROMPT);
+        } catch (e) { aiFailed = true; }
+        setPending((p) => p ? {
+          ...p,
+          sessionShot: { photo, ...ex },
+          sessionId: p.sessionId || ex.sessionId || "",
+          bugSerial: p.bugSerial || ex.bugSerial || "",
+        } : p);
+        if (aiFailed) setCaptureError("Couldn't read that screenshot — enter the session ID manually.");
+      } else if (type === "fido2Result") {
+        // FIDO 2 results graph at retrieval — AI reads the session ID for cross-check
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        let ex = {};
+        let aiFailed = false;
+        try {
+          ex = await extractWithVision(photo, FIDO_RESULT_PROMPT);
+        } catch (e) { aiFailed = true; }
+        setPending((p) => p ? {
+          ...p,
+          gps: p.gps && p.gps.lat !== "Unknown" ? p.gps : (gps || p.gps),
+          resultShot: { photo, ...ex },
+          resultSessionId: ex.sessionId || "",
+        } : p);
+        if (aiFailed) setCaptureError("Couldn't read that graph — enter the session ID manually to confirm the match.");
       } else if (type === "asset") {
         // Asset mapping — photo, GPS, AI-read serial and service date where visible
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
@@ -2078,14 +2290,24 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
 
   const save = () => {
     const flagged = (pending.conditionFlags || []).length > 0;
-    const record = flagged && pending.status !== "flagged"
+    let record = flagged && pending.status !== "flagged"
       ? { ...pending, status: "needs_review" }
       : pending;
+    // A confirmed leak, or a session ID that doesn't match, always goes to review
+    if (record.type === "fido2_retrieve") {
+      const a = (record.sessionId || "").trim().toLowerCase();
+      const g = (record.resultSessionId || "").trim().toLowerCase();
+      const mismatch = a && g && a !== g;
+      if (mismatch || record.outcome === "CONFIRMED LEAK" || record.outcome === "SUSPECTED LEAK") {
+        record = { ...record, status: "needs_review" };
+      }
+    }
     setCaptures((c) => [record, ...c]);
     setPending(null);
     setPosition("");
     setCaptureError("");
     setStage("idle");
+    setPendingBug("");
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 2200);
     setTimeout(() => inputRef.current?.focus(), 50);
@@ -2226,7 +2448,168 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 What are you capturing at this point?
               </div>
 
-              {task === "assets" ? (
+              {task === "fido2" ? (() => {
+                const bugStatus = buildBugStatus(captures);
+                const deployed = Object.values(bugStatus).filter((b) => b.state === "DEPLOYED");
+                const available = Object.values(bugStatus).filter((b) => b.state !== "DEPLOYED");
+                return (
+                  <>
+                    <div style={{ display: "flex", gap: 6, background: C.paperDeep, padding: 4, borderRadius: 10, marginBottom: 12 }}>
+                      {[
+                        { id: "deploy", label: `Deploy (${available.length})` },
+                        { id: "retrieve", label: `Retrieve (${deployed.length})` },
+                        { id: "board", label: "Board" },
+                      ].map((m) => (
+                        <button key={m.id} onClick={() => setFidoMode(m.id)} style={{
+                          flex: 1, border: "none", cursor: "pointer", padding: "8px 6px", borderRadius: 7,
+                          fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700,
+                          background: fidoMode === m.id ? "#fff" : "transparent",
+                          color: fidoMode === m.id ? C.charcoal : C.charcoalSoft,
+                          boxShadow: fidoMode === m.id ? "0 1px 3px rgba(43,47,51,0.12)" : "none"
+                        }}>{m.label}</button>
+                      ))}
+                    </div>
+
+                    {fidoMode === "board" && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                        {Object.values(bugStatus).map((b) => {
+                          const tone = b.state === "DEPLOYED" ? C.review : b.state === "RETURNED" ? C.approve : C.charcoalSoft;
+                          const soft = b.state === "DEPLOYED" ? C.reviewSoft : b.state === "RETURNED" ? C.approveSoft : C.paper;
+                          return (
+                            <div key={b.serial} style={{
+                              display: "flex", alignItems: "center", justifyContent: "space-between",
+                              padding: "9px 11px", borderRadius: 8, background: soft
+                            }}>
+                              <div>
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal }}>
+                                  {b.serial}
+                                </div>
+                                {b.deployment && b.state === "DEPLOYED" && (
+                                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 1 }}>
+                                    {b.deployment.deployAsset || "\u2014"} \u00b7 {b.deployment.position} \u00b7 {daysSince(b.deployment.id)}d out
+                                  </div>
+                                )}
+                                {b.retrieval && b.state === "RETURNED" && (
+                                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 1 }}>
+                                    {b.retrieval.outcome || "no outcome"}
+                                  </div>
+                                )}
+                              </div>
+                              <span style={{
+                                fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 700,
+                                color: tone, padding: "3px 9px", borderRadius: 999, background: "#fff"
+                              }}>{b.state}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {fidoMode === "deploy" && (
+                      <>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 6 }}>
+                          SELECT A SENSOR
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 4 }}>
+                          {available.map((b) => {
+                            const active = pendingBug === b.serial;
+                            return (
+                              <button key={b.serial} onClick={() => setPendingBug(active ? "" : b.serial)} style={{
+                                padding: "8px 11px", borderRadius: 8, cursor: "pointer",
+                                border: `1.5px solid ${active ? C.primary : C.line}`,
+                                background: active ? "#E7F2FE" : "#fff",
+                                fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: active ? 700 : 600,
+                                color: active ? C.primary : C.charcoal
+                              }}>{b.serial}</button>
+                            );
+                          })}
+                        </div>
+                        {available.length === 0 && (
+                          <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.review, textAlign: "center" }}>
+                            All sensors are currently deployed.
+                          </p>
+                        )}
+                        <button
+                          onClick={() => {
+                            if (!pendingBug) return;
+                            setPending((p) => ({ ...(p || {}), bugSerial: pendingBug }));
+                            openPicker("fido2Deploy");
+                          }}
+                          disabled={!pendingBug || !position.trim() || stage === "scanning"}
+                          style={{
+                            width: "100%", marginTop: 10, padding: "14px", borderRadius: 12,
+                            border: "none", cursor: pendingBug && position.trim() ? "pointer" : "not-allowed",
+                            background: pendingBug && position.trim() ? C.primary : C.line, color: "#fff",
+                            fontFamily: "'Inter',sans-serif", fontWeight: 700, fontSize: 13,
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 8
+                          }}>
+                          {stage === "scanning" ? <Loader2 size={16} className="spin" /> : <Camera size={16} />}
+                          Photograph Deployment Point
+                        </button>
+                      </>
+                    )}
+
+                    {fidoMode === "retrieve" && (
+                      <>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 6 }}>
+                          WHICH SENSOR ARE YOU COLLECTING?
+                        </div>
+                        {deployed.length === 0 ? (
+                          <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoalSoft, textAlign: "center", padding: "20px 0" }}>
+                            No sensors are currently deployed.
+                          </p>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {deployed.map((b) => (
+                              <button key={b.serial}
+                                onClick={() => {
+                                  const d = b.deployment;
+                                  setPending({
+                                    id: Date.now(),
+                                    type: "fido2_retrieve",
+                                    position: d.position,
+                                    reading: "", serial: "", confidence: 0,
+                                    gps: d.gps,
+                                    timestamp: nowStamp(),
+                                    status: "needs_review",
+                                    tech: survey.tech,
+                                    sentAt: null,
+                                    photo: null,
+                                    bugSerial: b.serial,
+                                    deployAsset: d.deployAsset || "",
+                                    fidoMode: d.fidoMode || "",
+                                    sessionId: d.sessionId || "",
+                                    deployedDays: daysSince(d.id),
+                                    resultShot: null,
+                                    resultSessionId: "",
+                                    outcome: "",
+                                    outcomeNote: "",
+                                  });
+                                  setStage("result");
+                                }}
+                                style={{
+                                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                                  padding: "12px 13px", borderRadius: 10, cursor: "pointer",
+                                  border: `1.5px solid ${C.line}`, background: "#fff", textAlign: "left"
+                                }}>
+                                <div>
+                                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, fontWeight: 700, color: C.charcoal }}>
+                                    {b.serial}
+                                  </div>
+                                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 2 }}>
+                                    {b.deployment.deployAsset || "\u2014"} \u00b7 {b.deployment.position} \u00b7 out {daysSince(b.deployment.id)} day{daysSince(b.deployment.id) === 1 ? "" : "s"}
+                                  </div>
+                                </div>
+                                <ChevronRight size={16} color={C.charcoalSoft} />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })() : task === "assets" ? (
                 <div
                   onClick={() => openPicker("asset")}
                   style={{
@@ -2403,6 +2786,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 {pending.type === "replacement" && <><RotateCcw size={14} /> Meter Replacement</>}
                 {pending.type === "amr" && <><Radio size={14} /> {pending.amrAssetType || "AMR"} Survey</>}
                 {pending.type === "asset" && <><LayoutGrid size={14} /> {pending.assetType || "Asset Mapping"}</>}
+                {pending.type === "fido2_deploy" && <><Radio size={14} /> Deploy {pending.bugSerial}</>}
+                {pending.type === "fido2_retrieve" && <><Radio size={14} /> Retrieve {pending.bugSerial}</>}
               </div>
 
               {captureError && (
@@ -2521,6 +2906,229 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       { key: "batteryVoltage", label: "BATTERY" },
                     ]}
                   />
+                </>
+              )}
+
+              {/* ---- FIDO 2 DEPLOYMENT ---- */}
+              {pending.type === "fido2_deploy" && (
+                <>
+                  <PhotoWell position={pending.position} timestamp={pending.timestamp} gps={pending.gps} photo={pending.photo} />
+                  <div style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 8,
+                    padding: "8px 11px", borderRadius: 8, background: "#E7F2FE"
+                  }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, fontWeight: 700, color: C.primaryDeep }}>
+                      {pending.bugSerial}
+                    </span>
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoalSoft }}>
+                      {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
+                    </span>
+                  </div>
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "13px 0 5px" }}>
+                    DEPLOYED ON
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {FIDO_DEPLOY_ASSETS.map((a) => {
+                      const on = pending.deployAsset === a;
+                      return (
+                        <button key={a} onClick={() => editField("deployAsset", a)} style={{
+                          padding: "7px 10px", borderRadius: 999, cursor: "pointer",
+                          border: `1.5px solid ${on ? C.primary : C.line}`,
+                          background: on ? "#E7F2FE" : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: on ? 700 : 600,
+                          color: on ? C.primary : C.charcoalSoft
+                        }}>{a}</button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "13px 0 5px" }}>
+                    SESSION MODE
+                  </div>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {FIDO_MODES.map((m) => {
+                      const on = pending.fidoMode === m;
+                      return (
+                        <button key={m} onClick={() => editField("fidoMode", m)} style={{
+                          flex: 1, padding: "9px 5px", borderRadius: 8, cursor: "pointer",
+                          border: `1.5px solid ${on ? C.primary : C.line}`,
+                          background: on ? "#E7F2FE" : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: on ? 700 : 600,
+                          color: on ? C.primary : C.charcoalSoft
+                        }}>{m}</button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{
+                    marginTop: 13, padding: 11, borderRadius: 11,
+                    border: `1.5px dashed ${pending.sessionShot ? C.approve : C.line}`,
+                    background: pending.sessionShot ? C.approveSoft : C.paper
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: pending.sessionShot ? C.approve : C.charcoal }}>
+                        SESSION SCREENSHOT
+                      </span>
+                      <button onClick={() => openPicker("fido2Session")} disabled={stage === "scanning"} style={{
+                        border: "none", background: "none", color: C.primary, cursor: "pointer",
+                        fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 11.5,
+                        display: "flex", alignItems: "center", gap: 4
+                      }}>
+                        {stage === "scanning" ? <Loader2 size={13} className="spin" /> : <Camera size={13} />}
+                        {pending.sessionShot ? "Retake" : "Add"}
+                      </button>
+                    </div>
+                    {pending.sessionShot && (
+                      <div style={{ display: "flex", gap: 9, marginTop: 9 }}>
+                        <img src={pending.sessionShot.photo} alt="session" style={{ width: 52, height: 68, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />
+                        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                          <div style={{ gridColumn: "1 / -1" }}>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>SESSION ID</div>
+                            <input value={pending.sessionId || ""} onChange={(e) => editField("sessionId", e.target.value)} placeholder="\u2014"
+                              style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${pending.sessionId ? C.line : C.review}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal, background: "#fff" }} />
+                          </div>
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>SIGNAL</div>
+                            <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: C.charcoal }}>{pending.sessionShot.signalStrength || "\u2014"}</div>
+                          </div>
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>BATTERY</div>
+                            <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: C.charcoal }}>{pending.sessionShot.batteryVoltage || "\u2014"}</div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {(!pending.deployAsset || !pending.sessionId) && (
+                    <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.review, textAlign: "center", marginTop: 9 }}>
+                      {!pending.deployAsset ? "Choose what it's deployed on." : "A session ID is needed to link the retrieval later."}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {/* ---- FIDO 2 RETRIEVAL ---- */}
+              {pending.type === "fido2_retrieve" && (
+                <>
+                  <div style={{
+                    padding: "11px 13px", borderRadius: 10, background: "#E7F2FE", marginBottom: 12
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 700, color: C.primaryDeep }}>
+                        {pending.bugSerial}
+                      </span>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 600, color: C.primaryDeep }}>
+                        OUT {pending.deployedDays} DAY{pending.deployedDays === 1 ? "" : "S"}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 3 }}>
+                      {pending.deployAsset} \u00b7 {pending.position} \u00b7 session {pending.sessionId || "\u2014"}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: 11, borderRadius: 11,
+                    border: `1.5px dashed ${pending.resultShot ? C.approve : C.line}`,
+                    background: pending.resultShot ? C.approveSoft : C.paper
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: pending.resultShot ? C.approve : C.charcoal }}>
+                        RESULTS GRAPH
+                      </span>
+                      <button onClick={() => openPicker("fido2Result")} disabled={stage === "scanning"} style={{
+                        border: "none", background: "none", color: C.primary, cursor: "pointer",
+                        fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 11.5,
+                        display: "flex", alignItems: "center", gap: 4
+                      }}>
+                        {stage === "scanning" ? <Loader2 size={13} className="spin" /> : <Camera size={13} />}
+                        {pending.resultShot ? "Retake" : "Add"}
+                      </button>
+                    </div>
+                    {pending.resultShot && (
+                      <>
+                        <img src={pending.resultShot.photo} alt="results" style={{ width: "100%", maxHeight: 190, objectFit: "contain", borderRadius: 7, marginTop: 9, background: "#fff" }} />
+                        {pending.resultShot.dateRange && (
+                          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoalSoft, marginTop: 6 }}>
+                            {pending.resultShot.dateRange}
+                          </div>
+                        )}
+                        {pending.resultShot.notes && (
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft, marginTop: 3 }}>
+                            {pending.resultShot.notes}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {pending.resultShot && (() => {
+                    const a = (pending.sessionId || "").trim().toLowerCase();
+                    const b = (pending.resultSessionId || "").trim().toLowerCase();
+                    const known = a && b;
+                    const match = known && a === b;
+                    return (
+                      <div style={{
+                        marginTop: 10, padding: "9px 11px", borderRadius: 9,
+                        background: !known ? C.paperDeep : match ? C.approveSoft : C.flagSoft
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          {known && (match ? <CheckCircle2 size={14} color={C.approve} /> : <AlertTriangle size={14} color={C.flag} />)}
+                          <span style={{
+                            fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700,
+                            color: !known ? C.charcoalSoft : match ? C.approve : C.flag
+                          }}>
+                            {!known ? "SESSION ID NOT CONFIRMED" : match ? "SESSION ID MATCHES DEPLOYMENT" : "SESSION ID DOES NOT MATCH"}
+                          </span>
+                        </div>
+                        <div style={{ display: "flex", gap: 8, marginTop: 7 }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>AT DEPLOYMENT</div>
+                            <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal }}>{pending.sessionId || "\u2014"}</div>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 600, color: C.charcoalSoft }}>ON GRAPH</div>
+                            <input value={pending.resultSessionId || ""} onChange={(e) => editField("resultSessionId", e.target.value)} placeholder="\u2014"
+                              style={{ width: "100%", boxSizing: "border-box", padding: "3px 6px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal, background: "#fff" }} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "14px 0 6px" }}>
+                    FINDING
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {Object.entries(FIDO_OUTCOMES).map(([o, style]) => {
+                      const on = pending.outcome === o;
+                      return (
+                        <button key={o} onClick={() => editField("outcome", o)} style={{
+                          padding: "11px 6px", borderRadius: 9, cursor: "pointer",
+                          border: `1.5px solid ${on ? style.colour : C.line}`,
+                          background: on ? style.soft : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700,
+                          color: on ? style.colour : C.charcoalSoft
+                        }}>{o}</button>
+                      );
+                    })}
+                  </div>
+                  <input
+                    value={pending.outcomeNote || ""}
+                    onChange={(e) => editField("outcomeNote", e.target.value)}
+                    placeholder="Note — what did you find?"
+                    style={{
+                      width: "100%", boxSizing: "border-box", marginTop: 9, padding: "9px 11px",
+                      borderRadius: 8, border: `1.5px solid ${C.line}`,
+                      fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal
+                    }}
+                  />
+                  {!pending.outcome && (
+                    <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.review, textAlign: "center", marginTop: 8 }}>
+                      Record a finding before saving.
+                    </p>
+                  )}
                 </>
               )}
 
@@ -3403,7 +4011,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
             <div key={c.id} onClick={() => { setSelected(c); setEditMode(false); }} style={{
               cursor: "pointer", borderRadius: 13, border: `1px solid ${C.line}`, overflow: "hidden", background: "#fff"
             }}>
-              <PhotoWell size="small" photo={c.photo || c.newMeter?.photo || c.oldMeter?.photo || c.fido?.photo || c.consumption?.photo || c.sensor?.photo} />
+              <PhotoWell size="small" photo={c.photo || c.resultShot?.photo || c.sessionShot?.photo || c.newMeter?.photo || c.oldMeter?.photo || c.fido?.photo || c.consumption?.photo || c.sensor?.photo} />
               <div style={{ padding: "9px 10px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontWeight: 600, fontSize: 13, color: C.charcoal }}>{c.position}</span>
@@ -3416,6 +4024,11 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {c.type === "fido" && <><Activity size={10} color={C.primary} /> FIDO</>}
                     {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
                     {c.type === "exception" && <><AlertTriangle size={10} color={C.review} /> Could not read</>}
+                    {c.type === "fido2_deploy" && <><Radio size={10} color={C.primary} /> {c.bugSerial} out</>}
+                    {c.type === "fido2_retrieve" && (() => {
+                      const st = FIDO_OUTCOMES[c.outcome];
+                      return <><Radio size={10} color={st ? st.colour : C.charcoalSoft} /> {c.outcome || "no finding"}</>;
+                    })()}
                     {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
                     {c.type === "asset" && <><LayoutGrid size={10} color={CATEGORY_COLOURS[c.assetCategory] || C.primary} /> {c.assetType || "Asset"}</>}
                     {c.type === "consumption" && <><Activity size={10} color={C.primary} /> Profile</>}
@@ -3614,6 +4227,108 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               }}>
                 <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft }}>AI Confidence</span>
                 <MiniGauge value={selected.confidence} color={selected.confidence < 85 ? C.review : C.approve} />
+              </div>
+            )}
+
+            {(selected.type === "fido2_deploy" || selected.type === "fido2_retrieve") && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{
+                  padding: "11px 13px", borderRadius: 10, background: "#E7F2FE", marginBottom: 10,
+                  display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6
+                }}>
+                  <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 700, color: C.primaryDeep }}>
+                    {selected.bugSerial}
+                  </span>
+                  <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft }}>
+                    {selected.deployAsset || "\u2014"}{selected.fidoMode ? ` \u00b7 ${selected.fidoMode}` : ""}
+                  </span>
+                </div>
+
+                {selected.type === "fido2_deploy" && selected.sessionShot && (
+                  <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+                    <img src={selected.sessionShot.photo} alt="session" onClick={() => setZoomPhoto(selected.sessionShot.photo)}
+                      style={{ width: 70, height: 92, objectFit: "cover", borderRadius: 7, cursor: "zoom-in" }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft }}>SESSION ID</div>
+                      {editMode ? (
+                        <input value={selected.sessionId || ""} onChange={(e) => updateCapture(selected.id, { sessionId: e.target.value })}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 13, fontWeight: 700, color: C.charcoal }} />
+                      ) : (
+                        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 14, fontWeight: 700, color: C.charcoal }}>{selected.sessionId || "\u2014"}</div>
+                      )}
+                      <div style={{ display: "flex", gap: 12, marginTop: 7 }}>
+                        <div>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, color: C.charcoalSoft }}>SIGNAL</div>
+                          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: C.charcoal }}>{selected.sessionShot.signalStrength || "\u2014"}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, color: C.charcoalSoft }}>BATTERY</div>
+                          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: C.charcoal }}>{selected.sessionShot.batteryVoltage || "\u2014"}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {selected.type === "fido2_retrieve" && (
+                  <>
+                    {selected.resultShot && (
+                      <img src={selected.resultShot.photo} alt="results" onClick={() => setZoomPhoto(selected.resultShot.photo)}
+                        style={{ width: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 8, background: "#fff", border: `1px solid ${C.line}`, cursor: "zoom-in", marginBottom: 10 }} />
+                    )}
+                    {(() => {
+                      const a = (selected.sessionId || "").trim().toLowerCase();
+                      const b = (selected.resultSessionId || "").trim().toLowerCase();
+                      const known = a && b;
+                      const match = known && a === b;
+                      return (
+                        <div style={{
+                          padding: "9px 11px", borderRadius: 9, marginBottom: 10,
+                          background: !known ? C.paperDeep : match ? C.approveSoft : C.flagSoft,
+                          display: "flex", alignItems: "center", gap: 7
+                        }}>
+                          {known && (match ? <CheckCircle2 size={14} color={C.approve} /> : <AlertTriangle size={14} color={C.flag} />)}
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700, color: !known ? C.charcoalSoft : match ? C.approve : C.flag }}>
+                            {!known ? "SESSION ID NOT CONFIRMED" : match ? `SESSION ${selected.sessionId} CONFIRMED` : `MISMATCH \u2014 ${selected.sessionId} vs ${selected.resultSessionId}`}
+                          </span>
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const st = FIDO_OUTCOMES[selected.outcome];
+                      return (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>FINDING</div>
+                          {editMode ? (
+                            <select value={selected.outcome || ""} onChange={(e) => updateCapture(selected.id, { outcome: e.target.value })}
+                              style={{ width: "100%", padding: "7px 9px", borderRadius: 7, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 700, color: C.charcoal }}>
+                              <option value="">\u2014</option>
+                              {Object.keys(FIDO_OUTCOMES).map((o) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                          ) : (
+                            <span style={{
+                              display: "inline-block", padding: "6px 14px", borderRadius: 999,
+                              background: st ? st.soft : C.paperDeep,
+                              fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 700,
+                              color: st ? st.colour : C.charcoalSoft
+                            }}>{selected.outcome || "NO FINDING RECORDED"}</span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                    <div>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>NOTE</div>
+                      {editMode ? (
+                        <input value={selected.outcomeNote || ""} onChange={(e) => updateCapture(selected.id, { outcomeNote: e.target.value })}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }} />
+                      ) : (
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, color: selected.outcomeNote ? C.charcoal : C.charcoalSoft }}>
+                          {selected.outcomeNote || "\u2014"}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
