@@ -223,6 +223,144 @@ const METER_MODES = {
   },
 };
 
+/* What kind of meter this is — recorded at every reading */
+const METER_TYPES = [
+  "WATER METER",
+  "BULK METER",
+  "ZONE METER",
+  "SECTIONAL TITLE BULK",
+  "COMMON PROPERTY",
+];
+
+/* Why a meter could not be read — drives the revisit list */
+const EXCEPTION_REASONS = [
+  "NO ACCESS — GATE LOCKED",
+  "NO ACCESS — DOG",
+  "METER BURIED / COVERED",
+  "METER CHAMBER FLOODED",
+  "GLASS FOGGED / UNREADABLE",
+  "METER MISSING",
+  "OCCUPANT REFUSED",
+  "OTHER",
+];
+
+/* Condition problems worth flagging to the estate */
+const CONDITION_FLAGS = [
+  "DAMAGED",
+  "LEAKING",
+  "NEEDS REPAIR",
+  "CHAMBER DAMAGED",
+  "LID MISSING",
+  "HARD TO ACCESS",
+];
+
+/* Parses an imported previous-readings CSV into a lookup keyed by position and serial. */
+function parsePreviousReadings(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
+  if (lines.length < 2) return {};
+  const splitRow = (line) => {
+    const out = [];
+    let cur = "";
+    let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = !inQ;
+      } else if (ch === "," && !inQ) { out.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
+  };
+  const headers = splitRow(lines[0]).map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const findCol = (...names) => {
+    for (const n of names) {
+      const i = headers.indexOf(n);
+      if (i !== -1) return i;
+    }
+    return -1;
+  };
+  const posCol = findCol("position", "positionname", "unit", "unitnumber", "erf", "address", "assetid");
+  const readCol = findCol("reading", "previousreading", "lastreading", "meterreading", "meterreadingm");
+  const serialCol = findCol("serial", "serialnumber", "meterserial");
+  const dateCol = findCol("date", "readingdate", "lastreaddate", "previousdate");
+  const typeCol = findCol("type", "metertype");
+  if (posCol === -1 && serialCol === -1) return {};
+
+  const map = {};
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitRow(lines[i]);
+    const entry = {
+      reading: readCol !== -1 ? cols[readCol] || "" : "",
+      date: dateCol !== -1 ? cols[dateCol] || "" : "",
+      serial: serialCol !== -1 ? cols[serialCol] || "" : "",
+      meterType: typeCol !== -1 ? (cols[typeCol] || "").toUpperCase() : "",
+    };
+    if (!entry.reading) continue;
+    if (posCol !== -1 && cols[posCol]) map[`P:${cols[posCol].trim().toUpperCase()}`] = entry;
+    if (serialCol !== -1 && cols[serialCol]) map[`S:${cols[serialCol].trim().toUpperCase()}`] = entry;
+  }
+  return map;
+}
+
+/* Finds the previous reading for a capture, by position first then serial. */
+function lookupPrevious(previous, position, serial) {
+  if (!previous) return null;
+  const byPos = position ? previous[`P:${position.trim().toUpperCase()}`] : null;
+  if (byPos) return byPos;
+  const bySerial = serial ? previous[`S:${serial.trim().toUpperCase()}`] : null;
+  return bySerial || null;
+}
+
+/* Signal quality bands for AMR meter readings.
+   Stronger than -85 dBm = GOOD, -85 to -95 = FAIR, weaker than -95 = WEAK. */
+function signalBand(signal) {
+  if (!signal) return null;
+  const m = String(signal).match(/-?\d+/);
+  if (!m) return null;
+  const dbm = parseInt(m[0], 10);
+  if (isNaN(dbm)) return null;
+  if (dbm > -85) return { label: "GOOD", colour: "#1B9C6E", soft: "#E4F5EE", dbm };
+  if (dbm >= -95) return { label: "FAIR", colour: "#D98A22", soft: "#FBF0DE", dbm };
+  return { label: "WEAK", colour: "#D6485A", soft: "#FBE6E9", dbm };
+}
+
+/* Finds meters seen by more than one AMR asset across a survey.
+   Returns a map of meter serial -> { sightings, best } so the stronger owner can be identified. */
+function findDuplicateMeters(captures) {
+  const seen = {};
+  captures.filter((c) => c.type === "amr").forEach((c) => {
+    (c.amrShots || []).forEach((shot) => {
+      (shot.meters || []).forEach((m) => {
+        const serial = (m.serial || "").trim().toUpperCase();
+        if (!serial) return;
+        const band = signalBand(m.signal);
+        (seen[serial] = seen[serial] || []).push({
+          captureId: c.id,
+          position: c.position,
+          assetType: c.amrAssetType || "AMR",
+          assetSerial: c.amrSerial || "",
+          signal: m.signal || "",
+          dbm: band ? band.dbm : null,
+        });
+      });
+    });
+  });
+  const dupes = {};
+  Object.entries(seen).forEach(([serial, sightings]) => {
+    // only a duplicate if seen by two different assets, not twice in one asset's screenshots
+    const distinct = new Set(sightings.map((s) => s.captureId));
+    if (distinct.size < 2) return;
+    const withSignal = sightings.filter((s) => s.dbm !== null);
+    const best = withSignal.length
+      ? withSignal.reduce((a, b) => (b.dbm > a.dbm ? b : a))
+      : null;
+    dupes[serial] = { sightings, best };
+  });
+  return dupes;
+}
+
 /* Asset taxonomy — matches the estate asset intake template exactly */
 const ASSET_CATEGORIES = {
   WATER: [
@@ -255,6 +393,15 @@ const ASSET_CATEGORIES = {
     "MINI KAMSTRUP GATEWAY",
     "LORA GATEWAY",
     "4G BRIDGE",
+  ],
+  FILTRATION: [
+    "FILTRATION SYSTEM",
+    "CARTRIDGE FILTER HOUSING",
+    "SAND FILTER",
+    "UV STERILISER",
+    "WATER SOFTENER",
+    "REVERSE OSMOSIS UNIT",
+    "DOSING UNIT / CHLORINATOR",
   ],
   FIRE: [
     "FIRE EXTINGUISHER",
@@ -294,6 +441,22 @@ const SERVICEABLE_TYPES = new Set([
   "WATER TANK",
 ]);
 
+/* Filtration assets carry two independent service cycles rather than one. */
+const FILTRATION_TYPES = new Set([
+  "FILTRATION SYSTEM",
+  "CARTRIDGE FILTER HOUSING",
+  "SAND FILTER",
+  "UV STERILISER",
+  "WATER SOFTENER",
+  "REVERSE OSMOSIS UNIT",
+  "DOSING UNIT / CHLORINATOR",
+]);
+
+const CARTRIDGE_INTERVAL_MONTHS = 6;
+const FLUSH_INTERVAL_MONTHS = 3;
+
+const CARTRIDGE_CONDITIONS = ["GOOD", "DISCOLOURED", "FOULED", "NEEDS REPLACEMENT"];
+
 /* Months between services, by type. Used to flag an overdue service. */
 const SERVICE_INTERVAL_MONTHS = {
   "FIRE EXTINGUISHER": 12,
@@ -308,6 +471,25 @@ const SERVICE_INTERVAL_MONTHS = {
   "BOREHOLE": 12,
   "WATER TANK": 24,
 };
+
+/* Returns { dueDate, overdue, monthsOverdue } for any date and interval, or null. */
+function dueStatus(lastISO, months) {
+  if (!lastISO) return null;
+  const last = new Date(lastISO);
+  if (isNaN(last.getTime())) return null;
+  const due = new Date(last);
+  due.setMonth(due.getMonth() + months);
+  const now = new Date();
+  const overdue = due < now;
+  const monthsOverdue = overdue
+    ? Math.max(1, Math.round((now - due) / (1000 * 60 * 60 * 24 * 30.44)))
+    : 0;
+  const pad = (n) => String(n).padStart(2, "0");
+  return {
+    dueDate: `${pad(due.getDate())} ${MONTHS[due.getMonth()]} ${due.getFullYear()}`,
+    overdue, monthsOverdue, intervalMonths: months,
+  };
+}
 
 /* Returns { dueDate, overdue, monthsOverdue } or null when no service date is recorded. */
 function serviceStatus(assetType, lastServiceISO) {
@@ -331,6 +513,7 @@ const CATEGORY_COLOURS = {
   WATER: "#0D86F3",
   ELECTRICAL: "#D98A22",
   "AMR EQUIPMENT": "#7B5BD6",
+  FILTRATION: "#0E9AA7",
   FIRE: "#D6485A",
   GENERAL: "#5B6570",
 };
@@ -614,9 +797,12 @@ function exportExcel(survey, captures, reviewer) {
       "Asset Type": c.amrAssetType || "",
       "Asset Serial": c.amrSerial || "",
       "Meters Linked": (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0),
+      "Good Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "GOOD"; }).length,
+      "Fair Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "FAIR"; }).length,
+      "Weak Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "WEAK"; }).length,
       ...trailing(c),
     }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "assets") {
     sheetName = "Asset Register";
     fileSuffix = "asset_register";
@@ -634,24 +820,35 @@ function exportExcel(survey, captures, reviewer) {
       last_service_date: c.assetLastService || "",
       next_service_due: (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? s.dueDate : ""; })(),
       service_status: (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? (s.overdue ? "OVERDUE" : "IN DATE") : (SERVICEABLE_TYPES.has(c.assetType) ? "NO RECORD" : ""); })(),
+      last_cartridge_replacement: c.assetLastCartridge || "",
+      cartridge_due: (() => { const s = dueStatus(c.assetLastCartridge, CARTRIDGE_INTERVAL_MONTHS); return s ? `${s.dueDate}${s.overdue ? " (OVERDUE)" : ""}` : ""; })(),
+      last_flush: c.assetLastFlush || "",
+      flush_due: (() => { const s = dueStatus(c.assetLastFlush, FLUSH_INTERVAL_MONTHS); return s ? `${s.dueDate}${s.overdue ? " (OVERDUE)" : ""}` : ""; })(),
+      cartridge_condition: c.assetCartridgeCondition || "",
+      filter_spec: c.assetFilterSpec || "",
       date_captured: c.timestamp.date,
       captured_by: c.tech || "",
       verified_by: c.status === "approved" ? (reviewer || "") : "",
       status: STATUS_EXPORT_LABEL[c.status] || c.status,
     }));
-    widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 16 }, { wch: 15 }, { wch: 30 }, { wch: 46 }, { wch: 16 }, { wch: 13 }, { wch: 13 }, { wch: 20 }, { wch: 14 }, { wch: 34 }, { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 22 }, { wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 13 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "meterwork" && meterMode === "replace") {
     sheetName = "Meter Replacements";
     fileSuffix = "meter_replacements";
     rows = captures.map((c) => ({
       ...common(c),
+      "Meter Type": c.meterType || "",
       "Old Meter Serial": c.oldMeter?.serial || "",
       "Old Meter Reading (m\u00b3)": c.oldMeter?.reading || "",
       "New Meter Serial": c.newMeter?.serial || "",
       "New Meter Reading (m\u00b3)": c.newMeter?.reading || "",
+      "Could Not Read": c.type === "exception" ? "YES" : "",
+      "Reason": c.exceptionReason || "",
+      "Problem Reported": (c.conditionFlags || []).join("; "),
+      "Problem Detail": c.conditionNote || "",
       ...trailing(c),
     }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 18 }, { wch: 20 }, { wch: 13 }, { wch: 26 }, { wch: 30 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "fido") {
     sheetName = "FIDO Deployments";
     fileSuffix = "fido_leak_analysis";
@@ -669,14 +866,27 @@ function exportExcel(survey, captures, reviewer) {
   } else {
     sheetName = "Meter Readings";
     fileSuffix = "meter_survey";
-    rows = captures.map((c) => ({
-      ...common(c),
-      "Serial Number": c.serial || "",
-      "Meter Reading (m\u00b3)": c.reading || "",
-      "AI Confidence %": c.confidence,
-      ...trailing(c),
-    }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 15 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    rows = captures.map((c) => {
+      const prev = lookupPrevious(survey.previousReadings, c.position, c.serial);
+      const used = prev && !isNaN(parseFloat(c.reading)) && !isNaN(parseFloat(prev.reading))
+        ? (parseFloat(c.reading) - parseFloat(prev.reading)).toFixed(2) : "";
+      return {
+        ...common(c),
+        "Meter Type": c.meterType || "",
+        "Serial Number": c.serial || "",
+        "Meter Reading (m\u00b3)": c.type === "exception" ? "" : (c.reading || ""),
+        "Previous Reading (m\u00b3)": prev ? prev.reading : "",
+        "Consumption (m\u00b3)": used,
+        "AI Confidence %": c.type === "exception" ? "" : c.confidence,
+        "Could Not Read": c.type === "exception" ? "YES" : "",
+        "Reason": c.exceptionReason || "",
+        "Needs Revisit": c.needsRevisit ? "YES" : "",
+        "Problem Reported": (c.conditionFlags || []).join("; "),
+        "Problem Detail": c.conditionNote || "",
+        ...trailing(c),
+      };
+    });
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 19 }, { wch: 16 }, { wch: 15 }, { wch: 13 }, { wch: 26 }, { wch: 13 }, { wch: 30 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   }
 
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -685,6 +895,7 @@ function exportExcel(survey, captures, reviewer) {
 
   // AMR surveys get a second sheet: one row per linked meter
   if (task === "amr") {
+    const dupes = findDuplicateMeters(captures);
     const amrRows = [];
     captures.forEach((c) => {
       (c.amrShots || []).forEach((shot) => {
@@ -698,6 +909,20 @@ function exportExcel(survey, captures, reviewer) {
             "Meter Serial": m.serial || "",
             "Meter Model": m.model || "",
             "Signal Strength": m.signal || "",
+            "Signal Band": (() => { const b = signalBand(m.signal); return b ? b.label : ""; })(),
+            "Duplicate": (() => {
+              const key = (m.serial || "").trim().toUpperCase();
+              const d = dupes[key];
+              if (!d) return "";
+              return d.best && d.best.captureId === c.id ? "YES - STRONGEST" : "YES - WEAKER";
+            })(),
+            "Also Seen By": (() => {
+              const key = (m.serial || "").trim().toUpperCase();
+              const d = dupes[key];
+              if (!d) return "";
+              return d.sightings.filter((s) => s.captureId !== c.id)
+                .map((s) => `${s.assetType} ${s.position} (${s.signal || "no signal"})`).join("; ");
+            })(),
             "Reading Date": shot.readingDate || c.timestamp.date,
             GPS: c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "",
             Technician: c.tech || "",
@@ -709,7 +934,8 @@ function exportExcel(survey, captures, reviewer) {
       const amrWs = XLSX.utils.json_to_sheet(amrRows);
       amrWs["!cols"] = [
         { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
-        { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 24 }, { wch: 14 },
+        { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 38 },
+        { wch: 14 }, { wch: 24 }, { wch: 14 },
       ];
       XLSX.utils.book_append_sheet(wb, amrWs, "Linked Meters");
     }
@@ -724,6 +950,8 @@ function exportAssetCSV(survey, captures) {
     "asset_id", "category", "asset_type", "description", "serial",
     "latitude", "longitude", "zone_or_street", "erf_or_unit", "access_notes",
     "last_service_date", "next_service_due", "service_status",
+    "last_cartridge_replacement", "cartridge_due", "last_flush", "flush_due",
+    "cartridge_condition", "filter_spec",
     "date_captured", "captured_by",
   ];
   const esc = (v) => {
@@ -746,6 +974,12 @@ function exportAssetCSV(survey, captures) {
       c.assetLastService || "",
       (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? s.dueDate : ""; })(),
       (() => { const s = serviceStatus(c.assetType, c.assetLastService); return s ? (s.overdue ? "OVERDUE" : "IN DATE") : (SERVICEABLE_TYPES.has(c.assetType) ? "NO RECORD" : ""); })(),
+      c.assetLastCartridge || "",
+      (() => { const s = dueStatus(c.assetLastCartridge, CARTRIDGE_INTERVAL_MONTHS); return s ? `${s.dueDate}${s.overdue ? " (OVERDUE)" : ""}` : ""; })(),
+      c.assetLastFlush || "",
+      (() => { const s = dueStatus(c.assetLastFlush, FLUSH_INTERVAL_MONTHS); return s ? `${s.dueDate}${s.overdue ? " (OVERDUE)" : ""}` : ""; })(),
+      c.assetCartridgeCondition || "",
+      c.assetFilterSpec || "",
       c.timestamp?.date || "",
       c.tech || "",
     ].map(esc).join(","));
@@ -772,14 +1006,23 @@ function printAssetRegister(survey, captures, reviewer) {
     (byCategory[cat] = byCategory[cat] || []).push(c);
   });
 
-  const catColour = { WATER: "#0D86F3", ELECTRICAL: "#D98A22", "AMR EQUIPMENT": "#7B5BD6", FIRE: "#D6485A", GENERAL: "#5B6570", UNCATEGORISED: "#5B6570" };
+  const catColour = { WATER: "#0D86F3", ELECTRICAL: "#D98A22", "AMR EQUIPMENT": "#7B5BD6", FILTRATION: "#0E9AA7", FIRE: "#D6485A", GENERAL: "#5B6570", UNCATEGORISED: "#5B6570" };
 
-  const serviceable = captures.filter((c) => SERVICEABLE_TYPES.has(c.assetType));
-  const overdueItems = serviceable.filter((c) => {
+  const serviceable = captures.filter((c) => SERVICEABLE_TYPES.has(c.assetType) || FILTRATION_TYPES.has(c.assetType));
+  const isOverdue = (c) => {
+    if (FILTRATION_TYPES.has(c.assetType)) {
+      const cart = dueStatus(c.assetLastCartridge, CARTRIDGE_INTERVAL_MONTHS);
+      const flush = dueStatus(c.assetLastFlush, FLUSH_INTERVAL_MONTHS);
+      return (cart && cart.overdue) || (flush && flush.overdue);
+    }
     const s = serviceStatus(c.assetType, c.assetLastService);
     return s && s.overdue;
-  });
-  const noRecordItems = serviceable.filter((c) => !serviceStatus(c.assetType, c.assetLastService));
+  };
+  const hasRecord = (c) => FILTRATION_TYPES.has(c.assetType)
+    ? !!(c.assetLastCartridge || c.assetLastFlush)
+    : !!serviceStatus(c.assetType, c.assetLastService);
+  const overdueItems = serviceable.filter(isOverdue);
+  const noRecordItems = serviceable.filter((c) => !hasRecord(c));
 
   const serviceBanner = serviceable.length ? `
       <div class="servicebox">
@@ -810,6 +1053,20 @@ function printAssetRegister(survey, captures, reviewer) {
             ${c.assetErf ? `<tr><td>ERF / UNIT</td><td class="mono">${c.assetErf}</td></tr>` : ""}
             ${c.assetAccessNotes ? `<tr><td>ACCESS</td><td>${c.assetAccessNotes}</td></tr>` : ""}
             ${(() => {
+              if (FILTRATION_TYPES.has(c.assetType)) {
+                const cart = dueStatus(c.assetLastCartridge, CARTRIDGE_INTERVAL_MONTHS);
+                const flush = dueStatus(c.assetLastFlush, FLUSH_INTERVAL_MONTHS);
+                const badCond = c.assetCartridgeCondition === "FOULED" || c.assetCartridgeCondition === "NEEDS REPLACEMENT";
+                return `
+                  ${c.assetFilterSpec ? `<tr><td>FILTER SPEC</td><td class="mono">${c.assetFilterSpec}</td></tr>` : ""}
+                  <tr><td>CARTRIDGE</td><td>${c.assetLastCartridge
+                    ? `<span class="mono">${c.assetLastCartridge}</span> \u2014 <span class="${cart.overdue ? "overdue" : "indate"}">due ${cart.dueDate}${cart.overdue ? ` (OVERDUE ${cart.monthsOverdue}M)` : ""}</span>`
+                    : `<span class="overdue">NO RECORD</span>`}</td></tr>
+                  <tr><td>FLUSH</td><td>${c.assetLastFlush
+                    ? `<span class="mono">${c.assetLastFlush}</span> \u2014 <span class="${flush.overdue ? "overdue" : "indate"}">due ${flush.dueDate}${flush.overdue ? ` (OVERDUE ${flush.monthsOverdue}M)` : ""}</span>`
+                    : `<span class="overdue">NO RECORD</span>`}</td></tr>
+                  ${c.assetCartridgeCondition ? `<tr><td>CONDITION</td><td class="${badCond ? "overdue" : "indate"}">${c.assetCartridgeCondition}</td></tr>` : ""}`;
+              }
               const s = serviceStatus(c.assetType, c.assetLastService);
               if (!s && !SERVICEABLE_TYPES.has(c.assetType)) return "";
               if (!s) return `<tr><td>SERVICE</td><td class="overdue">NO SERVICE DATE RECORDED</td></tr>`;
@@ -934,6 +1191,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
     </tr>`;
   }).join("");
 
+  const amrDupes = findDuplicateMeters(captures);
   const amrAssets = captures.filter((c) => c.type === "amr" && (c.amrShots || []).length);
   const amrAppendix = amrAssets.length ? `
       <h2 style="font-size:15px; margin:30px 0 6px;">Appendix — AMR Linked Meters</h2>
@@ -942,9 +1200,19 @@ function printReport(survey, captures, reviewer, counts, pct) {
         return `
         <h3 style="font-size:12.5px; margin:16px 0 4px;">${c.amrAssetType || "AMR"} · ${c.position}${c.amrSerial ? ` · ${c.amrSerial}` : ""} <span style="font-weight:normal;color:#5B6570;">(${meters.length} meters)</span></h3>
         <table>
-          <thead><tr><th>Meter Serial</th><th>Model</th><th>Signal</th></tr></thead>
+          <thead><tr><th>Meter Serial</th><th>Model</th><th>Signal</th><th>Band</th><th>Note</th></tr></thead>
           <tbody>
-            ${meters.map((m) => `<tr><td>${m.serial || "—"}</td><td>${m.model || "—"}</td><td>${m.signal || "—"}</td></tr>`).join("")}
+            ${meters.map((m) => {
+              const b = signalBand(m.signal);
+              const key = (m.serial || "").trim().toUpperCase();
+              const d = amrDupes[key];
+              const dupNote = d
+                ? (d.best && d.best.captureId === c.id
+                    ? "Strongest — should own this meter"
+                    : `Also on ${d.best ? `${d.best.assetType} ${d.best.position}` : "another asset"} (stronger)`)
+                : "";
+              return `<tr><td>${m.serial || "—"}</td><td>${m.model || "—"}</td><td>${m.signal || "—"}</td><td class="band ${b ? b.label.toLowerCase() : ""}">${b ? b.label : "—"}</td><td class="dupnote">${dupNote}</td></tr>`;
+            }).join("")}
           </tbody>
         </table>`;
       }).join("")}
@@ -968,6 +1236,11 @@ function printReport(survey, captures, reviewer, counts, pct) {
       th { background: #F4F7F9; }
       .thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; display:inline-block; margin: 1px; }
       .footer { margin-top: 22px; font-size: 11px; color:#5B6570; }
+      .band { font-weight:700; text-align:center; }
+      .band.good { color:#1B9C6E; }
+      .band.fair { color:#D98A22; }
+      .band.weak { color:#D6485A; }
+      .dupnote { font-size:10px; color:#D98A22; }
       @media print { .no-print { display:none; } }
     </style></head><body>
       <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
@@ -1037,6 +1310,31 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
   const [previous, setPrevious] = useState([]);
   const [loadingPrev, setLoadingPrev] = useState(true);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState(null);
+  const csvInputRef = useRef(null);
+  const [csvError, setCsvError] = useState("");
+
+  const handleCSV = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setCsvError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const map = parsePreviousReadings(String(reader.result));
+        const count = Object.keys(map).length;
+        if (!count) {
+          setCsvError("No readings found. The file needs a position (or serial) column and a reading column.");
+          return;
+        }
+        setSurvey((s) => ({ ...s, previousReadings: map }));
+      } catch (err) {
+        setCsvError("Couldn't read that file. Please check it's a CSV.");
+      }
+    };
+    reader.onerror = () => setCsvError("Couldn't read that file.");
+    reader.readAsText(file);
+  };
 
   // Auto-fill the technician name from the logged-in user
   useEffect(() => {
@@ -1232,6 +1530,47 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
         </div>
       )}
 
+      {task === "meterwork" && survey.meterMode === "read" && (
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft, display: "block", marginBottom: 6 }}>
+            Previous Readings (optional)
+          </label>
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleCSV}
+            style={{ display: "none" }}
+          />
+          {(() => {
+            const count = Object.keys(survey.previousReadings || {}).length;
+            return (
+              <button
+                onClick={() => csvInputRef.current?.click()}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "11px 13px", borderRadius: 9,
+                  border: `1.5px dashed ${count ? C.approve : C.line}`,
+                  background: count ? C.approveSoft : C.paper, cursor: "pointer"
+                }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: count ? C.approve : C.charcoal }}>
+                  <FileSpreadsheet size={15} color={count ? C.approve : C.charcoalSoft} />
+                  {count ? `${count} previous readings loaded` : "Import previous readings CSV"}
+                </span>
+                {count > 0 && <Check size={15} color={C.approve} />}
+              </button>
+            );
+          })()}
+          {csvError ? (
+            <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.flag, marginTop: 6, marginBottom: 0 }}>{csvError}</p>
+          ) : (
+            <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 6, marginBottom: 0 }}>
+              A CSV with columns for position (or serial) and reading. The technician will see the last reading at each meter.
+            </p>
+          )}
+        </div>
+      )}
+
       <button
         disabled={!canStart}
         onClick={onStart}
@@ -1264,6 +1603,46 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   const [captureError, setCaptureError] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [showException, setShowException] = useState(false);
+
+  const previousForPosition = position.trim()
+    ? lookupPrevious(survey.previousReadings, position, "")
+    : null;
+
+  const openException = () => {
+    if (!position.trim()) {
+      setShake(true);
+      inputRef.current?.focus();
+      setTimeout(() => setShake(false), 420);
+      return;
+    }
+    setCaptureError("");
+    setShowException(true);
+  };
+
+  const saveException = async (reason) => {
+    setShowException(false);
+    const gps = await getRealGPS();
+    setCaptures((c) => [{
+      id: Date.now(),
+      type: "exception",
+      position: position.trim(),
+      reading: "",
+      serial: "",
+      confidence: 0,
+      gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+      timestamp: nowStamp(),
+      status: "flagged",
+      tech: survey.tech,
+      sentAt: null,
+      photo: null,
+      exceptionReason: reason,
+      needsRevisit: true,
+    }, ...c]);
+    setPosition("");
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2200);
+  };
   const inputRef = useRef(null);
   const fileInputRef = useRef(null); // camera-first (meter, sensor install)
   const galleryInputRef = useRef(null); // gallery-first (consumption screenshots)
@@ -1382,6 +1761,10 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           assetErf: "",
           assetAccessNotes: "",
           assetLastService: lastService,
+          assetLastCartridge: "",
+          assetLastFlush: "",
+          assetCartridgeCondition: "",
+          assetFilterSpec: "",
         });
       } else if (type === "amrAsset") {
         // AMR asset photo (MUC or repeater) — AI reads serial if legible, GPS at capture
@@ -1484,6 +1867,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
             fido: null,
             oldMeter: null,
             newMeter: null,
+            meterType: "",
+            conditionFlags: [],
+            conditionNote: "",
           };
           return {
             ...base,
@@ -1659,7 +2045,11 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   };
 
   const save = () => {
-    setCaptures((c) => [pending, ...c]);
+    const flagged = (pending.conditionFlags || []).length > 0;
+    const record = flagged && pending.status !== "flagged"
+      ? { ...pending, status: "needs_review" }
+      : pending;
+    setCaptures((c) => [record, ...c]);
     setPending(null);
     setPosition("");
     setCaptureError("");
@@ -1707,6 +2097,44 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
         />
 
         <div style={{ padding: 16, minHeight: 380, position: "relative" }}>
+          {showException && (
+            <div
+              onClick={() => setShowException(false)}
+              style={{
+                position: "absolute", inset: 0, zIndex: 6, background: "rgba(43,47,51,0.45)",
+                display: "flex", alignItems: "flex-end"
+              }}>
+              <div onClick={(e) => e.stopPropagation()} style={{
+                width: "100%", background: "#fff", borderRadius: "16px 16px 0 0", padding: "14px 16px 18px",
+                maxHeight: "100%", overflowY: "auto"
+              }}>
+                <div style={{ width: 34, height: 4, borderRadius: 99, background: C.line, margin: "0 auto 12px" }} />
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 700, color: C.charcoal, marginBottom: 3, textAlign: "center" }}>
+                  Why can't this meter be read?
+                </div>
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginBottom: 12, textAlign: "center" }}>
+                  {position.trim()} will be flagged for a revisit.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {EXCEPTION_REASONS.map((r) => (
+                    <button key={r} onClick={() => saveException(r)} style={{
+                      padding: "11px 12px", borderRadius: 9, cursor: "pointer", textAlign: "left",
+                      border: `1.5px solid ${C.line}`, background: "#fff",
+                      fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoal
+                    }}>
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => setShowException(false)} style={{
+                  width: "100%", padding: "10px", border: "none", background: "none", cursor: "pointer",
+                  color: C.charcoalSoft, fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 12, marginTop: 6
+                }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
           {chooseFor && (
             <div
               onClick={() => setChooseFor(null)}
@@ -1897,9 +2325,36 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 </div>
               )}
 
+              {task === "meterwork" && previousForPosition && (
+                <div style={{
+                  marginTop: 10, padding: "9px 11px", borderRadius: 9, background: "#E7F2FE",
+                  display: "flex", alignItems: "center", justifyContent: "space-between"
+                }}>
+                  <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700, color: C.primaryDeep }}>
+                    PREVIOUS READING
+                  </span>
+                  <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, fontWeight: 700, color: C.primaryDeep }}>
+                    {previousForPosition.reading} m\u00b3{previousForPosition.date ? ` \u00b7 ${previousForPosition.date}` : ""}
+                  </span>
+                </div>
+              )}
+
               <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: shake || captureError ? C.flag : justSaved ? C.approve : C.charcoalSoft, textAlign: "center", marginTop: 10, fontWeight: justSaved ? 600 : 400 }}>
-                {captureError || (shake ? "Enter a position first." : justSaved ? "✓ Saved — ready for the next point" : "Pick what you're capturing — you can add the others afterwards. GPS and timestamp are recorded automatically.")}
+                {captureError || (shake ? "Enter a position first." : justSaved ? "\u2713 Saved \u2014 ready for the next point" : "Pick what you're capturing \u2014 you can add the others afterwards. GPS and timestamp are recorded automatically.")}
               </p>
+
+              {task === "meterwork" && (
+                <button
+                  onClick={openException}
+                  style={{
+                    width: "100%", marginTop: 6, padding: "10px", borderRadius: 9,
+                    border: `1.5px solid ${C.line}`, background: "#fff", cursor: "pointer",
+                    fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.review,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                  }}>
+                  <AlertTriangle size={14} /> Can't read this meter
+                </button>
+              )}
             </>
           )}
 
@@ -1962,6 +2417,46 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     </span>
                     <MiniGauge value={pending.confidence} color={pending.confidence < 85 ? C.review : C.approve} />
                   </div>
+
+                  {(() => {
+                    const prev = lookupPrevious(survey.previousReadings, pending.position, pending.serial);
+                    if (!prev) return null;
+                    const now = parseFloat(pending.reading);
+                    const before = parseFloat(prev.reading);
+                    const valid = !isNaN(now) && !isNaN(before);
+                    const used = valid ? now - before : null;
+                    const odd = valid && (used < 0 || used > before * 3);
+                    return (
+                      <div style={{
+                        marginTop: 10, padding: "10px 12px", borderRadius: 9,
+                        background: odd ? C.reviewSoft : "#E7F2FE"
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: odd ? C.review : C.primaryDeep }}>
+                            PREVIOUS {prev.date ? `\u00b7 ${prev.date}` : ""}
+                          </span>
+                          <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: odd ? C.review : C.primaryDeep }}>
+                            {prev.reading} m\u00b3
+                          </span>
+                        </div>
+                        {valid && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                            <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: odd ? C.review : C.primaryDeep }}>
+                              CONSUMPTION
+                            </span>
+                            <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: odd ? C.review : C.primaryDeep }}>
+                              {used.toFixed(2)} m\u00b3
+                            </span>
+                          </div>
+                        )}
+                        {odd && (
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 600, color: C.review, marginTop: 5 }}>
+                            {used < 0 ? "READING IS LOWER THAN LAST TIME \u2014 CHECK IT" : "UNUSUALLY HIGH CONSUMPTION \u2014 CHECK IT"}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </>
               )}
 
@@ -2102,7 +2597,78 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                           style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal }} />
                       </div>
 
-                      {SERVICEABLE_TYPES.has(pending.assetType) && (() => {
+                      {FILTRATION_TYPES.has(pending.assetType) && (
+                        <>
+                          {[
+                            { key: "assetLastCartridge", label: "DATE OF LAST CARTRIDGE REPLACEMENT", months: CARTRIDGE_INTERVAL_MONTHS },
+                            { key: "assetLastFlush", label: "DATE OF LAST FLUSH / BACKWASH", months: FLUSH_INTERVAL_MONTHS },
+                          ].map((f) => {
+                            const st = dueStatus(pending[f.key], f.months);
+                            return (
+                              <div key={f.key}>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
+                                  {f.label}
+                                </div>
+                                <input
+                                  type="date"
+                                  value={pending[f.key] || ""}
+                                  onChange={(e) => editField(f.key, e.target.value)}
+                                  style={{
+                                    width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8,
+                                    border: `1.5px solid ${st?.overdue ? C.flag : C.line}`,
+                                    fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, color: C.charcoal
+                                  }}
+                                />
+                                {st && (
+                                  <div style={{
+                                    marginTop: 5, padding: "6px 9px", borderRadius: 7,
+                                    background: st.overdue ? C.flagSoft : C.approveSoft,
+                                    fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600,
+                                    color: st.overdue ? C.flag : C.approve
+                                  }}>
+                                    {st.overdue
+                                      ? `OVERDUE BY ${st.monthsOverdue} MONTH${st.monthsOverdue === 1 ? "" : "S"} \u2014 was due ${st.dueDate}`
+                                      : `Next due ${st.dueDate}`}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
+                              CARTRIDGE CONDITION
+                            </div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                              {CARTRIDGE_CONDITIONS.map((cond) => {
+                                const active = pending.assetCartridgeCondition === cond;
+                                const bad = cond === "FOULED" || cond === "NEEDS REPLACEMENT";
+                                const col = bad ? C.flag : cond === "DISCOLOURED" ? C.review : C.approve;
+                                return (
+                                  <button key={cond} onClick={() => editField("assetCartridgeCondition", cond)} style={{
+                                    padding: "7px 11px", borderRadius: 999, cursor: "pointer",
+                                    border: `1.5px solid ${active ? col : C.line}`,
+                                    background: active ? `${col}18` : "#fff",
+                                    fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: active ? 700 : 600,
+                                    color: active ? col : C.charcoalSoft
+                                  }}>{cond}</button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
+                              FILTER SIZE / SPEC
+                            </div>
+                            <input value={pending.assetFilterSpec || ""} onChange={(e) => editField("assetFilterSpec", e.target.value.toUpperCase())}
+                              placeholder='E.G. 10" 5 MICRON'
+                              style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: C.charcoal }} />
+                          </div>
+                        </>
+                      )}
+
+                      {!FILTRATION_TYPES.has(pending.assetType) && SERVICEABLE_TYPES.has(pending.assetType) && (() => {
                         const st = serviceStatus(pending.assetType, pending.assetLastService);
                         return (
                           <div>
@@ -2261,8 +2827,20 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                                         style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoal, background: "#fff" }} />
                                       <input value={m.model || ""} onChange={(e) => updateMeter({ model: e.target.value })} placeholder="—"
                                         style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft, background: "#fff" }} />
-                                      <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })} placeholder="—"
-                                        style={{ width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5, border: `1px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft, background: "#fff" }} />
+                                      {(() => {
+                                        const band = signalBand(m.signal);
+                                        return (
+                                          <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })} placeholder="—"
+                                            title={band ? band.label : ""}
+                                            style={{
+                                              width: "100%", boxSizing: "border-box", padding: "4px 5px", borderRadius: 5,
+                                              border: `1px solid ${band ? band.colour : C.line}`,
+                                              background: band ? band.soft : "#fff",
+                                              fontFamily: "'IBM Plex Mono',monospace", fontSize: 10,
+                                              color: band ? band.colour : C.charcoalSoft, fontWeight: band ? 700 : 400
+                                            }} />
+                                        );
+                                      })()}
                                       <button onClick={removeMeter} style={{ border: "none", background: "none", cursor: "pointer", padding: 0, display: "flex", justifyContent: "center" }}>
                                         <X size={10} color={C.charcoalSoft} />
                                       </button>
@@ -2286,12 +2864,26 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                             )}
                           </div>
                         ))}
-                        <div style={{
-                          padding: "8px 11px", borderRadius: 8, background: C.approveSoft,
-                          fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.approve, textAlign: "center"
-                        }}>
-                          {pending.amrShots.reduce((n, s) => n + (s.meters || []).length, 0)} meters linked to this {pending.amrAssetType?.toLowerCase() || "asset"}
-                        </div>
+                        {(() => {
+                          const all = pending.amrShots.flatMap((s) => s.meters || []);
+                          const bands = { GOOD: 0, FAIR: 0, WEAK: 0 };
+                          all.forEach((m) => { const b = signalBand(m.signal); if (b) bands[b.label]++; });
+                          return (
+                            <div style={{ padding: "9px 11px", borderRadius: 8, background: C.paperDeep }}>
+                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.charcoal, textAlign: "center", marginBottom: 7 }}>
+                                {all.length} meters linked to this {pending.amrAssetType?.toLowerCase() || "asset"}
+                              </div>
+                              <div style={{ display: "flex", gap: 5, justifyContent: "center" }}>
+                                {[["GOOD", C.approve, C.approveSoft], ["FAIR", C.review, C.reviewSoft], ["WEAK", C.flag, C.flagSoft]].map(([k, col, soft]) => (
+                                  <span key={k} style={{
+                                    padding: "3px 10px", borderRadius: 999, background: soft,
+                                    fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: col
+                                  }}>{bands[k]} {k}</span>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -2420,6 +3012,71 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 </>
               )}
 
+              {(pending.type === "meter" || pending.type === "replacement") && (
+                <>
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "14px 0 6px" }}>
+                    METER TYPE
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {METER_TYPES.map((t) => {
+                      const active = pending.meterType === t;
+                      return (
+                        <button key={t} onClick={() => editField("meterType", t)} style={{
+                          padding: "7px 11px", borderRadius: 999, cursor: "pointer",
+                          border: `1.5px solid ${active ? C.primary : C.line}`,
+                          background: active ? "#E7F2FE" : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: active ? 700 : 600,
+                          color: active ? C.primary : C.charcoalSoft
+                        }}>{t}</button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{
+                    marginTop: 14, borderRadius: 10, border: `1.5px solid ${(pending.conditionFlags || []).length ? C.review : C.line}`,
+                    background: (pending.conditionFlags || []).length ? C.reviewSoft : C.paper, padding: 11
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                      <AlertTriangle size={13} color={(pending.conditionFlags || []).length ? C.review : C.charcoalSoft} />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700, color: (pending.conditionFlags || []).length ? C.review : C.charcoal }}>
+                        ANY PROBLEM WITH THIS METER?
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {CONDITION_FLAGS.map((f) => {
+                        const on = (pending.conditionFlags || []).includes(f);
+                        return (
+                          <button key={f}
+                            onClick={() => {
+                              const cur = pending.conditionFlags || [];
+                              editField("conditionFlags", on ? cur.filter((x) => x !== f) : [...cur, f]);
+                            }}
+                            style={{
+                              padding: "6px 10px", borderRadius: 999, cursor: "pointer",
+                              border: `1.5px solid ${on ? C.flag : C.line}`,
+                              background: on ? C.flagSoft : "#fff",
+                              fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: on ? 700 : 600,
+                              color: on ? C.flag : C.charcoalSoft
+                            }}>{f}</button>
+                        );
+                      })}
+                    </div>
+                    {(pending.conditionFlags || []).length > 0 && (
+                      <input
+                        value={pending.conditionNote || ""}
+                        onChange={(e) => editField("conditionNote", e.target.value)}
+                        placeholder="Add detail — what exactly is wrong?"
+                        style={{
+                          width: "100%", boxSizing: "border-box", marginTop: 8, padding: "8px 10px",
+                          borderRadius: 8, border: `1.5px solid ${C.line}`,
+                          fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal
+                        }}
+                      />
+                    )}
+                  </div>
+                </>
+              )}
+
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                 <button
                   onClick={() => {
@@ -2499,6 +3156,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
 
   const [editMode, setEditMode] = useState(false);
   const [zoomPhoto, setZoomPhoto] = useState(null);
+  const duplicateMeters = findDuplicateMeters(captures);
   const [toast, setToast] = useState(null);
 
   const flashToast = (text, tone) => {
@@ -2725,6 +3383,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {c.type === "sensor" && <><Radio size={10} color={C.primary} /> Sensor</>}
                     {c.type === "fido" && <><Activity size={10} color={C.primary} /> FIDO</>}
                     {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
+                    {c.type === "exception" && <><AlertTriangle size={10} color={C.review} /> Could not read</>}
                     {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
                     {c.type === "asset" && <><LayoutGrid size={10} color={CATEGORY_COLOURS[c.assetCategory] || C.primary} /> {c.assetType || "Asset"}</>}
                     {c.type === "consumption" && <><Activity size={10} color={C.primary} /> Profile</>}
@@ -2776,6 +3435,22 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, margin: "14px 0" }}>
               {/* editable fields (edit mode) or static display */}
+              {(selected.type === "meter" || selected.type === "replacement" || !selected.type) && (
+                <div style={{ background: editMode ? "#fff" : C.paper, border: editMode ? `1.5px solid ${C.primary}` : "none", borderRadius: 9, padding: "8px 10px" }}>
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, fontWeight: 600 }}>Meter Type</div>
+                  {editMode ? (
+                    <select value={selected.meterType || ""} onChange={(e) => updateCapture(selected.id, { meterType: e.target.value })}
+                      style={{ width: "100%", border: "none", outline: "none", fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal, fontWeight: 600, background: "transparent" }}>
+                      <option value="">\u2014</option>
+                      {METER_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  ) : (
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, color: selected.meterType ? C.charcoal : C.charcoalSoft, fontWeight: 600 }}>
+                      {selected.meterType || "\u2014"}
+                    </div>
+                  )}
+                </div>
+              )}
               {(!selected.type || selected.type === "meter") && (
                 editMode ? (
                   <>
@@ -2910,6 +3585,58 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               </div>
             )}
 
+            {selected.type === "exception" && (
+              <div style={{
+                marginBottom: 16, padding: 12, borderRadius: 10,
+                background: C.reviewSoft, border: `1.5px solid ${C.review}`
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+                  <AlertTriangle size={15} color={C.review} />
+                  <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 700, color: C.review }}>
+                    COULD NOT BE READ
+                  </span>
+                </div>
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 13, fontWeight: 600, color: C.charcoal }}>
+                  {selected.exceptionReason || "No reason recorded"}
+                </div>
+                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft, marginTop: 5 }}>
+                  Flagged for a revisit. Arrange access or schedule a return visit.
+                </div>
+              </div>
+            )}
+
+            {(selected.conditionFlags || []).length > 0 && (
+              <div style={{
+                marginBottom: 16, padding: 12, borderRadius: 10,
+                background: C.flagSoft, border: `1.5px solid ${C.flag}`
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
+                  <AlertTriangle size={15} color={C.flag} />
+                  <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 700, color: C.flag }}>
+                    PROBLEM REPORTED
+                  </span>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {selected.conditionFlags.map((f) => (
+                    <span key={f} style={{
+                      padding: "4px 10px", borderRadius: 999, background: "#fff",
+                      border: `1px solid ${C.flag}`, fontFamily: "'Inter',sans-serif",
+                      fontSize: 10, fontWeight: 700, color: C.flag
+                    }}>{f}</span>
+                  ))}
+                </div>
+                {editMode ? (
+                  <input value={selected.conditionNote || ""} onChange={(e) => updateCapture(selected.id, { conditionNote: e.target.value })}
+                    placeholder="Detail"
+                    style={{ width: "100%", boxSizing: "border-box", marginTop: 8, padding: "7px 9px", borderRadius: 7, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }} />
+                ) : selected.conditionNote ? (
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal, marginTop: 8 }}>
+                    {selected.conditionNote}
+                  </div>
+                ) : null}
+              </div>
+            )}
+
             {selected.type === "asset" && (
               <div style={{ marginBottom: 16, padding: 11, borderRadius: 10, background: C.paper }}>
                 {[
@@ -2939,7 +3666,66 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   </div>
                 ))}
 
-                {SERVICEABLE_TYPES.has(selected.assetType) && (() => {
+                {FILTRATION_TYPES.has(selected.assetType) && (
+                  <>
+                    {[
+                      { key: "assetLastCartridge", label: "LAST CARTRIDGE REPLACEMENT", months: CARTRIDGE_INTERVAL_MONTHS },
+                      { key: "assetLastFlush", label: "LAST FLUSH / BACKWASH", months: FLUSH_INTERVAL_MONTHS },
+                    ].map((f) => {
+                      const st = dueStatus(selected[f.key], f.months);
+                      return (
+                        <div key={f.key} style={{ marginBottom: 9 }}>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>{f.label}</div>
+                          {editMode ? (
+                            <input type="date" value={selected[f.key] || ""} onChange={(e) => updateCapture(selected.id, { [f.key]: e.target.value })}
+                              style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal }} />
+                          ) : (
+                            <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: selected[f.key] ? C.charcoal : C.charcoalSoft }}>
+                              {selected[f.key] || "\u2014"}
+                            </div>
+                          )}
+                          {st && (
+                            <div style={{
+                              marginTop: 4, padding: "4px 8px", borderRadius: 6, display: "inline-block",
+                              background: st.overdue ? C.flagSoft : C.approveSoft,
+                              fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700,
+                              color: st.overdue ? C.flag : C.approve
+                            }}>
+                              {st.overdue ? `OVERDUE BY ${st.monthsOverdue} MONTH${st.monthsOverdue === 1 ? "" : "S"}` : `NEXT DUE ${st.dueDate}`}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <div style={{ marginBottom: 9 }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>CARTRIDGE CONDITION</div>
+                      {editMode ? (
+                        <select value={selected.assetCartridgeCondition || ""} onChange={(e) => updateCapture(selected.id, { assetCartridgeCondition: e.target.value })}
+                          style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }}>
+                          <option value="">\u2014</option>
+                          {CARTRIDGE_CONDITIONS.map((c2) => <option key={c2} value={c2}>{c2}</option>)}
+                        </select>
+                      ) : (
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: (selected.assetCartridgeCondition === "FOULED" || selected.assetCartridgeCondition === "NEEDS REPLACEMENT") ? C.flag : C.charcoal }}>
+                          {selected.assetCartridgeCondition || "\u2014"}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ marginBottom: 9 }}>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>FILTER SIZE / SPEC</div>
+                      {editMode ? (
+                        <input value={selected.assetFilterSpec || ""} onChange={(e) => updateCapture(selected.id, { assetFilterSpec: e.target.value.toUpperCase() })}
+                          style={{ width: "100%", boxSizing: "border-box", padding: "6px 8px", borderRadius: 6, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal }} />
+                      ) : (
+                        <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, color: selected.assetFilterSpec ? C.charcoal : C.charcoalSoft }}>
+                          {selected.assetFilterSpec || "\u2014"}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {!FILTRATION_TYPES.has(selected.assetType) && SERVICEABLE_TYPES.has(selected.assetType) && (() => {
                   const st = serviceStatus(selected.assetType, selected.assetLastService);
                   return (
                     <div>
@@ -2981,6 +3767,58 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                 <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginBottom: 10 }}>
                   Tap a screenshot to view it full size and check the readings.
                 </div>
+
+                {(() => {
+                  const mine = (selected.amrShots || []).flatMap((s) => s.meters || []);
+                  const bands = { GOOD: 0, FAIR: 0, WEAK: 0 };
+                  mine.forEach((m) => { const b = signalBand(m.signal); if (b) bands[b.label]++; });
+                  const dupHere = mine
+                    .map((m) => (m.serial || "").trim().toUpperCase())
+                    .filter((s) => s && duplicateMeters[s]);
+                  const uniqueDupes = [...new Set(dupHere)];
+                  const losing = uniqueDupes.filter((s) => {
+                    const d = duplicateMeters[s];
+                    return d.best && d.best.captureId !== selected.id;
+                  });
+                  return (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ display: "flex", gap: 5, marginBottom: uniqueDupes.length ? 8 : 0 }}>
+                        {[["GOOD", C.approve, C.approveSoft], ["FAIR", C.review, C.reviewSoft], ["WEAK", C.flag, C.flagSoft]].map(([k, col, soft]) => (
+                          <span key={k} style={{
+                            padding: "4px 11px", borderRadius: 999, background: soft,
+                            fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: col
+                          }}>{bands[k]} {k}</span>
+                        ))}
+                      </div>
+                      {uniqueDupes.length > 0 && (
+                        <div style={{
+                          padding: "9px 11px", borderRadius: 9, background: C.reviewSoft,
+                          border: `1px solid ${C.review}`
+                        }}>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.review, marginBottom: 5 }}>
+                            {uniqueDupes.length} METER{uniqueDupes.length === 1 ? "" : "S"} ALSO SEEN BY ANOTHER ASSET
+                          </div>
+                          {uniqueDupes.map((s) => {
+                            const d = duplicateMeters[s];
+                            const isBest = d.best && d.best.captureId === selected.id;
+                            return (
+                              <div key={s} style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal, marginBottom: 2 }}>
+                                {s} \u2014 {isBest
+                                  ? "strongest here, this asset should own it"
+                                  : `stronger on ${d.best ? `${d.best.assetType} ${d.best.position} (${d.best.signal})` : "another asset"}`}
+                              </div>
+                            );
+                          })}
+                          {losing.length > 0 && (
+                            <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 5 }}>
+                              Consider removing the weaker allocations so each meter reports to one device.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {selected.amrShots.map((shot, si) => (
                   <div key={si} style={{ marginBottom: 16, borderRadius: 10, border: `1px solid ${C.line}`, overflow: "hidden" }}>
@@ -3044,9 +3882,27 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                                 {editMode ? (
                                   <input value={m.serial || ""} onChange={(e) => updateMeter({ serial: e.target.value })}
                                     style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal }} />
-                                ) : (
-                                  <span style={{ color: C.charcoal, fontWeight: 600 }}>{m.serial}</span>
-                                )}
+                                ) : (() => {
+                                  const key = (m.serial || "").trim().toUpperCase();
+                                  const dup = duplicateMeters[key];
+                                  const isBest = dup && dup.best && dup.best.captureId === selected.id;
+                                  return (
+                                    <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                      <span style={{ color: C.charcoal, fontWeight: 600 }}>{m.serial}</span>
+                                      {dup && (
+                                        <span title={isBest ? "Strongest signal — this asset should own it" : "Also seen by another asset with a stronger signal"}
+                                          style={{
+                                            padding: "1px 6px", borderRadius: 999, fontFamily: "'Inter',sans-serif",
+                                            fontSize: 8.5, fontWeight: 700,
+                                            background: isBest ? C.approveSoft : C.reviewSoft,
+                                            color: isBest ? C.approve : C.review
+                                          }}>
+                                          {isBest ? "BEST" : "DUP"}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               <td style={{ padding: "4px 6px" }}>
                                 {editMode ? (
@@ -3060,9 +3916,18 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                                 {editMode ? (
                                   <input value={m.signal || ""} onChange={(e) => updateMeter({ signal: e.target.value })}
                                     style={{ width: "100%", boxSizing: "border-box", padding: "3px 5px", borderRadius: 4, border: `1.5px solid ${C.primary}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal, textAlign: "right" }} />
-                                ) : (
-                                  <span style={{ color: C.charcoalSoft }}>{m.signal || "\u2014"}</span>
-                                )}
+                                ) : (() => {
+                                  const band = signalBand(m.signal);
+                                  return (
+                                    <span style={{
+                                      display: "inline-block", padding: band ? "2px 7px" : 0, borderRadius: 999,
+                                      background: band ? band.soft : "transparent",
+                                      color: band ? band.colour : C.charcoalSoft, fontWeight: band ? 700 : 400
+                                    }}>
+                                      {m.signal || "\u2014"}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               {editMode && (
                                 <td style={{ padding: "4px 4px", textAlign: "center" }}>
