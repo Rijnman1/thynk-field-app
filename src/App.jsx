@@ -64,10 +64,42 @@ const WORKER_URL = "https://thynk-vision.geyserr.workers.dev";
 const SURVEY_PREFIX = "survey:";
 const genSurveyId = () => `${SURVEY_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-/* Team access key — entered once when the app opens, held for the session. */
+/* Team access key — entered once, then remembered on this device for a working day
+   so a download, a reload or the app being backgrounded doesn't force a fresh login. */
 let APP_KEY = "";
+const SESSION_STORE = "thynk_session";
+const SESSION_HOURS = 12;
+
 const setAppKey = (k) => { APP_KEY = k; };
 const keyHeaders = (extra = {}) => ({ "X-App-Key": APP_KEY, ...extra });
+
+function saveSession(key, role, username) {
+  try {
+    localStorage.setItem(SESSION_STORE, JSON.stringify({
+      key, role, username, expires: Date.now() + SESSION_HOURS * 60 * 60 * 1000,
+    }));
+  } catch { /* storage unavailable — session simply won't persist */ }
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORE);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    if (!s.key || !s.role || !s.expires || Date.now() > s.expires) {
+      localStorage.removeItem(SESSION_STORE);
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession() {
+  APP_KEY = "";
+  try { localStorage.removeItem(SESSION_STORE); } catch { /* ignore */ }
+}
 
 /* Returns {role, username} if the key is valid, or null. */
 async function verifyAppKey(candidate) {
@@ -376,8 +408,9 @@ const ASSET_CATEGORIES = {
     "WATER TANK",
   ],
   ELECTRICAL: [
-    "ELECTRICAL METER",
+    "ELECTRICAL METER SINGLE PHASE",
     "ELECTRICAL METER THREE PHASE",
+    "CT METER",
     "SECTIONAL TITLE BULK ELECTRICAL METER",
     "ELECTRICAL KIOSK",
     "DB BOARD",
@@ -416,7 +449,6 @@ const ASSET_CATEGORIES = {
   GENERAL: [
     "MANHOLE",
     "DRAIN",
-    "STORMWATER INLET",
     "FIBRE CHAMBER",
     "STREET LIGHT",
     "IRRIGATION POINT",
@@ -4194,6 +4226,7 @@ function UnlockScreen({ onUnlocked }) {
       const result = await verifyAppKey(key.trim());
       if (result) {
         setAppKey(key.trim());
+        saveSession(key.trim(), result.role, result.username);
         onUnlocked(result.role, result.username);
       } else {
         setError("That key isn't right — check with your team and try again.");
@@ -4310,14 +4343,34 @@ function TaskHub({ onChoose, role }) {
 
 /* ---------- App ---------- */
 export default function App() {
-  const [role, setRole] = useState(null);
-  const [username, setUsername] = useState("");
+  // Restore a saved session so a download or reload doesn't force a fresh login
+  const restored = loadSession();
+  if (restored) setAppKey(restored.key);
+
+  const [role, setRole] = useState(restored ? restored.role : null);
+  const [username, setUsername] = useState(restored ? restored.username : "");
   const unlocked = !!role;
   const [task, setTask] = useState(null); // null (hub) | "meterwork" | "fido" | "amr" | "assets"
   const [screen, setScreen] = useState("setup");
   const [survey, setSurvey] = useState({ id: null, siteName: "", address: "", surveyName: "", tech: "", gps: null });
   const [captures, setCaptures] = useState([]);
   const [syncStatus, setSyncStatus] = useState("idle");
+
+  // A restored session is trusted immediately so work isn't interrupted, but the key
+  // is re-checked in the background in case it was changed or removed on the server.
+  useEffect(() => {
+    if (!restored) return;
+    verifyAppKey(restored.key)
+      .then((r) => {
+        if (!r) {
+          clearSession();
+          setRole(null);
+          setUsername("");
+        }
+      })
+      .catch(() => { /* offline — keep working with the saved session */ });
+    // eslint-disable-next-line
+  }, []);
 
   const stateRef = useRef({ survey, captures });
   stateRef.current = { survey, captures };
@@ -4356,6 +4409,17 @@ export default function App() {
     setSurvey((s) => ({ ...s, id: genSurveyId(), taskType: task }));
     setCaptures([]);
     setScreen("capture");
+  };
+
+  const logOut = () => {
+    clearSession();
+    setRole(null);
+    setUsername("");
+    setTask(null);
+    setSurvey({ id: null, siteName: "", address: "", surveyName: "", tech: "", gps: null, taskType: null, meterMode: null });
+    setCaptures([]);
+    setSyncStatus("idle");
+    setScreen("setup");
   };
 
   const switchTask = () => {
@@ -4418,14 +4482,19 @@ export default function App() {
         <Logo />
         {unlocked && (
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-            <span style={{
-              fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, letterSpacing: 0.5,
-              color: role === "office" ? C.primaryDeep : C.approve,
-              background: role === "office" ? "#E7F2FE" : C.approveSoft,
-              padding: "3px 9px", borderRadius: 999, textTransform: "capitalize"
-            }}>
+            <button
+              onClick={logOut}
+              title="Log out"
+              style={{
+                fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, letterSpacing: 0.5,
+                color: role === "office" ? C.primaryDeep : C.approve,
+                background: role === "office" ? "#E7F2FE" : C.approveSoft,
+                padding: "3px 9px", borderRadius: 999, textTransform: "capitalize",
+                border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 5
+              }}>
               {username} · {role === "office" ? "Office" : "Field"}
-            </span>
+              <Lock size={10} />
+            </button>
             {task && (
               <button onClick={switchTask} title="Switch task" style={{
                 display: "flex", alignItems: "center", gap: 5, border: `1.5px solid ${C.line}`,
