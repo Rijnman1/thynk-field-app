@@ -228,15 +228,16 @@ const BUG_REGISTER = [
   "B01:42269", "B01:42270", "B01:42274", "B01:42275",
 ];
 
-/* What a bug can physically be deployed on. */
+/* What a bug can physically be deployed on. Coupling quality affects the reading —
+   direct metal contact transmits best, a chamber wall worst. */
 const FIDO_DEPLOY_ASSETS = [
-  "VALVE",
-  "WATER METER",
-  "FIRE HYDRANT",
-  "VALVE CHAMBER",
-  "PUMP",
-  "INDIVIDUAL UNIT METER",
-  "OTHER",
+  { v: "PIPE (DIRECT)", coupling: 2, note: "Best coupling \u2014 straight onto the pipe wall" },
+  { v: "VALVE", coupling: 2, note: "Direct metal path to the pipe" },
+  { v: "FIRE HYDRANT", coupling: 2, note: "Direct metal path to the pipe" },
+  { v: "WATER METER", coupling: 1, note: "Good, but the meter body can damp the signal" },
+  { v: "INDIVIDUAL UNIT METER", coupling: 1, note: "Good on the service, limited reach to the main" },
+  { v: "PUMP", coupling: 0, note: "Pump noise can mask a leak" },
+  { v: "OTHER", coupling: 0, note: "" },
 ];
 
 /* Session modes offered by the FIDO app at deployment. */
@@ -331,10 +332,10 @@ const DEPLOY_CONDITIONS = {
     label: "PIPE DIAMETER",
     hint: "Small is good",
     options: [
-      { v: "<100mm", good: 2 },
-      { v: "100-200mm", good: 1 },
-      { v: "200-400mm", good: 0 },
-      { v: ">400mm", good: -2 },
+      { v: "15-25mm", good: 2 },
+      { v: "25-65mm", good: 1 },
+      { v: "65-125mm", good: -1 },
+      { v: ">125mm", good: -2 },
     ],
   },
   pressure: {
@@ -353,6 +354,7 @@ const DEPLOY_CONDITIONS = {
       { v: "HARD", good: 2 },
       { v: "MIXED", good: 0 },
       { v: "SOFT / SANDY", good: -2 },
+      { v: "N/A \u2014 EXPOSED", good: 0, na: true },
     ],
   },
   pipecondition: {
@@ -403,13 +405,18 @@ function conditionScore(c) {
   if (!set.length && !hasMaterial) return null;
 
   let score = 0;
+  let counted = 0;
   set.forEach((k) => {
     const opt = DEPLOY_CONDITIONS[k].options.find((o) => o.v === c[`cond_${k}`]);
-    if (opt) score += opt.good;
+    // A factor marked not applicable is excluded rather than scored as mediocre
+    if (opt && !opt.na) { score += opt.good; counted += 1; }
   });
-  if (hasMaterial) score += MATERIAL_ACOUSTIC_SCORE[c.pipeMaterial];
+  if (hasMaterial) { score += MATERIAL_ACOUSTIC_SCORE[c.pipeMaterial]; counted += 1; }
+  const mount = FIDO_DEPLOY_ASSETS.find((a) => a.v === c.deployAsset);
+  if (mount && mount.v !== "OTHER") { score += mount.coupling; counted += 1; }
+  if (!counted) return null;
 
-  const factors = set.length + (hasMaterial ? 1 : 0);
+  const factors = counted;
   const pct = Math.round(((score + factors * 2) / (factors * 4)) * 100);
 
   let label, colour, soft, advice;
@@ -1222,6 +1229,7 @@ function exportExcel(survey, captures, reviewer) {
           "Bug Serial": c.bugSerial || "",
           "Deployed On": c.deployAsset || "",
           "Pipe Material": PIPE_MATERIALS[c.pipeMaterial]?.label || "",
+          "Coupling": (() => { const a = FIDO_DEPLOY_ASSETS.find((x) => x.v === c.deployAsset); return a ? (a.coupling > 1 ? "DIRECT" : "INDIRECT") : ""; })(),
           "Pipe Diameter": c.cond_diameter || "",
           "Pressure": c.cond_pressure || "",
           "Backfill": c.cond_backfill || "",
@@ -1471,6 +1479,7 @@ function printFidoReport(survey, captures, reviewer) {
     const match = a && g ? a === g : null;
     const pm = PIPE_MATERIALS[d.pipeMaterial];
     const cs = conditionScore(d);
+    const mount = FIDO_DEPLOY_ASSETS.find((x) => x.v === d.deployAsset);
 
     return `
       <div class="sensor">
@@ -1534,6 +1543,7 @@ function printFidoReport(survey, captures, reviewer) {
               <b>${pm.normal}</b>, within a range of <b>${pm.freq}</b>. Signal loss is ${pm.attenuation},
               so a leak is detectable to roughly ${pm.spacing.toLowerCase().replace("up to ~", "")} from the sensor.
               Energy well outside that band is unlikely to be a leak on this material.
+              ${mount && mount.note ? ` Sensor was mounted on ${d.deployAsset.toLowerCase()} \u2014 ${mount.note.toLowerCase()}.` : ""}
             </div>` : ""}
           </div>` : r ? `<div class="nograph">No results graph attached</div>` : ""}
 
@@ -3410,18 +3420,28 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                     {FIDO_DEPLOY_ASSETS.map((a) => {
-                      const on = pending.deployAsset === a;
+                      const on = pending.deployAsset === a.v;
                       return (
-                        <button key={a} onClick={() => editField("deployAsset", a)} style={{
+                        <button key={a.v} onClick={() => editField("deployAsset", a.v)} style={{
                           padding: "7px 10px", borderRadius: 999, cursor: "pointer",
                           border: `1.5px solid ${on ? C.primary : C.line}`,
                           background: on ? "#E7F2FE" : "#fff",
                           fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: on ? 700 : 600,
                           color: on ? C.primary : C.charcoalSoft
-                        }}>{a}</button>
+                        }}>{a.v}</button>
                       );
                     })}
                   </div>
+                  {(() => {
+                    const a = FIDO_DEPLOY_ASSETS.find((x) => x.v === pending.deployAsset);
+                    if (!a || !a.note) return null;
+                    const col = a.coupling > 1 ? C.approve : C.review;
+                    return (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: col, marginTop: 5, fontWeight: 600 }}>
+                        {a.note}
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "13px 0 5px" }}>
                     PIPE MATERIAL
@@ -3474,13 +3494,13 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                           <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 700, color: C.charcoalSoft }}>{cfg.label}</span>
                           <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, color: C.charcoalSoft, opacity: 0.8 }}>{cfg.hint}</span>
                         </div>
-                        <div style={{ display: "flex", gap: 4 }}>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                           {cfg.options.map((o) => {
                             const on = pending[`cond_${key}`] === o.v;
-                            const col = o.good > 0 ? C.approve : o.good === 0 ? C.review : C.flag;
+                            const col = o.na ? C.charcoalSoft : o.good > 0 ? C.approve : o.good === 0 ? C.review : C.flag;
                             return (
                               <button key={o.v} onClick={() => editField(`cond_${key}`, on ? "" : o.v)} style={{
-                                flex: 1, padding: "7px 3px", borderRadius: 7, cursor: "pointer",
+                                flex: "1 1 auto", minWidth: 62, padding: "7px 4px", borderRadius: 7, cursor: "pointer",
                                 border: `1.5px solid ${on ? col : C.line}`,
                                 background: on ? `${col}18` : "#fff",
                                 fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: on ? 700 : 600,
@@ -3607,6 +3627,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                         </div>
                         <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 4, lineHeight: 1.4 }}>
                           {[
+                            pending.deployAsset && `on ${pending.deployAsset.toLowerCase()}`,
                             PIPE_MATERIALS[pending.pipeMaterial]?.label,
                             pending.cond_diameter && `\u2300 ${pending.cond_diameter}`,
                             pending.cond_pressure && `${pending.cond_pressure.toLowerCase()} pressure`,
@@ -4870,6 +4891,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                       </div>
                       <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 4 }}>
                         {[
+                          selected.deployAsset && `on ${selected.deployAsset.toLowerCase()}`,
                           PIPE_MATERIALS[selected.pipeMaterial]?.label,
                           selected.cond_diameter && `\u2300 ${selected.cond_diameter}`,
                           selected.cond_pressure && `${selected.cond_pressure.toLowerCase()} pressure`,
