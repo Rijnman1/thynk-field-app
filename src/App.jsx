@@ -433,6 +433,43 @@ function conditionScore(c) {
   return { pct, label, colour, soft, advice, recorded: factors, total: keys.length + 1 };
 }
 
+/* Investigation methods used within a waypoint. */
+const WAYPOINT_TESTS = {
+  CORRELATION: { label: "CORRELATION", needsDistance: true, icon: "Activity" },
+  "TOP SOUNDING": { label: "TOP SOUNDING", needsDistance: false },
+  "SOUNDING LITE": { label: "SOUNDING LITE", needsDistance: false },
+  "GROUND MIC": { label: "GROUND MIC", needsDistance: false },
+  HYDROPHONE: { label: "HYDROPHONE", needsDistance: false },
+  OTHER: { label: "OTHER", needsDistance: false },
+};
+
+/* How an investigation ended. */
+const WAYPOINT_OUTCOMES = {
+  "LEAK CONFIRMED": { colour: "#D6485A", soft: "#FBE6E9" },
+  "LEAK SUSPECTED": { colour: "#D98A22", soft: "#FBF0DE" },
+  "NO LEAK FOUND": { colour: "#1B9C6E", soft: "#E4F5EE" },
+  "ONGOING": { colour: "#0D86F3", soft: "#E7F2FE" },
+};
+
+const CORRELATION_PROMPT = `This is a screenshot from a leak noise correlator. Extract only what is clearly legible. Respond with ONLY a JSON object, no other text, in this exact shape:
+{"distance": string|null, "sensorSpacing": string|null, "confidence": string|null, "notes": string|null}
+Rules:
+- "distance": the located leak distance from a sensor, as displayed, including units.
+- "sensorSpacing": the total pipe length between sensors if shown.
+- "confidence": any correlation quality, coherence or confidence figure shown.
+- "notes": a short factual description of the correlation peak, maximum 15 words.
+Use null for anything not clearly visible. Do not guess values.`;
+
+/* Waypoints are numbered per survey so a client report can refer to them plainly. */
+function nextWaypointRef(captures) {
+  const used = captures
+    .filter((c) => c.type === "fido2_waypoint")
+    .map((c) => parseInt(String(c.waypointRef || "").replace(/\D/g, ""), 10))
+    .filter((n) => !isNaN(n));
+  const next = used.length ? Math.max(...used) + 1 : 1;
+  return `WP-${String(next).padStart(3, "0")}`;
+}
+
 /* Findings recorded at retrieval. */
 const FIDO_OUTCOMES = {
   "NO LEAK": { colour: "#1B9C6E", soft: "#E4F5EE" },
@@ -1216,7 +1253,7 @@ function exportExcel(survey, captures, reviewer) {
     fileSuffix = "fido_leak_analysis";
     const byBug = buildBugStatus(captures);
     rows = captures
-      .filter((c) => c.type === "fido2_deploy" || c.type === "fido2_retrieve")
+      .filter((c) => c.type === "fido2_deploy" || c.type === "fido2_retrieve" || c.type === "fido2_waypoint")
       .map((c) => {
         const b = byBug[c.bugSerial];
         const dep = b?.deployment;
@@ -1225,8 +1262,11 @@ function exportExcel(survey, captures, reviewer) {
         const g = (c.resultSessionId || "").trim().toLowerCase();
         return {
           ...common(c),
-          "Stage": c.type === "fido2_deploy" ? "DEPLOYED" : "RETRIEVED",
-          "Bug Serial": c.bugSerial || "",
+          "Stage": c.type === "fido2_deploy" ? "DEPLOYED" : c.type === "fido2_waypoint" ? "INVESTIGATED" : "RETRIEVED",
+          "Waypoint": c.waypointRef || "",
+          "Tests Carried Out": (c.tests || []).map((t) => t.method + (t.distance ? ` @ ${t.distance}` : "")).join("; "),
+          "Pinpoint GPS": c.pinpointGps ? `${c.pinpointGps.lat}, ${c.pinpointGps.lng}` : "",
+          "Bug Serial": c.bugSerial || c.linkedBug || "",
           "Deployed On": c.deployAsset || "",
           "Pipe Material": PIPE_MATERIALS[c.pipeMaterial]?.label || "",
           "Coupling": (() => { const a = FIDO_DEPLOY_ASSETS.find((x) => x.v === c.deployAsset); return a ? (a.coupling > 1 ? "DIRECT" : "INDIRECT") : ""; })(),
@@ -1249,7 +1289,7 @@ function exportExcel(survey, captures, reviewer) {
           ...trailing(c),
         };
       });
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 15 }, { wch: 22 }, { wch: 21 }, { wch: 13 }, { wch: 19 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 13 }, { wch: 10 }, { wch: 34 }, { wch: 22 }, { wch: 14 }, { wch: 20 }, { wch: 15 }, { wch: 11 }, { wch: 22 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 26 }, { wch: 21 }, { wch: 13 }, { wch: 19 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "fido") {
     sheetName = "FIDO Deployments";
     fileSuffix = "fido_leak_analysis";
@@ -1439,19 +1479,16 @@ function exportAssetCSV(survey, captures) {
   URL.revokeObjectURL(url);
 }
 
-/* FIDO leak analysis report — results graphs rendered large enough to actually read */
+/* FIDO leak analysis report — written for the client.
+   Tells the story: what was surveyed, what was flagged, what was investigated, what was found.
+   Internal detail (acoustics, listening conditions, coupling) stays in the app and the spreadsheet. */
 function printFidoReport(survey, captures, reviewer) {
   const win = window.open("", "_blank", "width=1000,height=1100");
   if (!win) return;
 
   const status = buildBugStatus(captures);
-  const entries = Object.values(status).filter((b) => b.deployment);
-
-  const counts = { "NO LEAK": 0, "SUSPECTED LEAK": 0, "CONFIRMED LEAK": 0, "INCONCLUSIVE": 0, "STILL DEPLOYED": 0 };
-  entries.forEach((b) => {
-    if (!b.retrieval) counts["STILL DEPLOYED"]++;
-    else counts[b.retrieval.outcome] = (counts[b.retrieval.outcome] || 0) + 1;
-  });
+  const deployments = Object.values(status).filter((b) => b.deployment);
+  const waypoints = captures.filter((c) => c.type === "fido2_waypoint");
 
   const outcomeColour = {
     "NO LEAK": "#1B9C6E",
@@ -1459,103 +1496,96 @@ function printFidoReport(survey, captures, reviewer) {
     "CONFIRMED LEAK": "#D6485A",
     "INCONCLUSIVE": "#5B6570",
     "STILL DEPLOYED": "#0D86F3",
+    "LEAK CONFIRMED": "#D6485A",
+    "LEAK SUSPECTED": "#D98A22",
+    "NO LEAK FOUND": "#1B9C6E",
+    "ONGOING": "#0D86F3",
   };
 
-  // Leaks first — the estate should see the findings that matter at the front
-  const order = { "CONFIRMED LEAK": 0, "SUSPECTED LEAK": 1, "INCONCLUSIVE": 2, "NO LEAK": 3 };
-  const sorted = [...entries].sort((a, b) => {
-    const ao = a.retrieval ? (order[a.retrieval.outcome] ?? 4) : 5;
-    const bo = b.retrieval ? (order[b.retrieval.outcome] ?? 4) : 5;
-    return ao - bo;
+  const counts = {};
+  deployments.forEach((b) => {
+    const k = b.retrieval ? (b.retrieval.outcome || "INCONCLUSIVE") : "STILL DEPLOYED";
+    counts[k] = (counts[k] || 0) + 1;
   });
 
-  const sections = sorted.map((b) => {
-    const d = b.deployment;
-    const r = b.retrieval;
-    const outcome = r ? (r.outcome || "NO FINDING RECORDED") : "STILL DEPLOYED";
-    const col = outcomeColour[outcome] || "#5B6570";
-    const a = (d.sessionId || "").trim().toLowerCase();
-    const g = (r?.resultSessionId || "").trim().toLowerCase();
-    const match = a && g ? a === g : null;
-    const pm = PIPE_MATERIALS[d.pipeMaterial];
-    const cs = conditionScore(d);
-    const mount = FIDO_DEPLOY_ASSETS.find((x) => x.v === d.deployAsset);
+  const flagged = deployments.filter((b) =>
+    b.retrieval && (b.retrieval.outcome === "SUSPECTED LEAK" || b.retrieval.outcome === "CONFIRMED LEAK"));
+  const confirmed = waypoints.filter((w) => w.outcome === "LEAK CONFIRMED");
 
+  /* Stage 1 — coverage */
+  const coverageRows = deployments.map((b) => {
+    const d = b.deployment, r = b.retrieval;
+    const outcome = r ? (r.outcome || "INCONCLUSIVE") : "STILL DEPLOYED";
+    return `<tr>
+      <td class="mono">${b.serial}</td>
+      <td>${d.position || "\u2014"}</td>
+      <td>${d.deployAsset || "\u2014"}</td>
+      <td>${d.timestamp?.date || "\u2014"}</td>
+      <td>${r ? `${r.deployedDays ?? "\u2014"} days` : "out"}</td>
+      <td style="color:${outcomeColour[outcome]};font-weight:700;">${outcome}</td>
+    </tr>`;
+  }).join("");
+
+  /* Stage 2 — flagged points, with the session graph as evidence */
+  const flaggedSections = flagged.map((b) => {
+    const d = b.deployment, r = b.retrieval;
+    const col = outcomeColour[r.outcome];
+    const wp = waypoints.find((w) => w.linkedBug === b.serial);
     return `
-      <div class="sensor">
-        <div class="sensorhead" style="border-left-color:${col};">
+      <div class="block">
+        <div class="blockhead" style="border-left-color:${col};">
           <div>
-            <div class="serial">${b.serial}</div>
-            <div class="where">${d.deployAsset || "\u2014"} \u00b7 ${d.position || "\u2014"}${d.fidoMode ? ` \u00b7 ${d.fidoMode}` : ""}</div>
+            <div class="btitle">${d.position || b.serial}</div>
+            <div class="bsub">Sensor ${b.serial} on ${(d.deployAsset || "").toLowerCase()} \u00b7 ${r.deployedDays ?? "\u2014"} days${wp ? ` \u00b7 investigated as ${wp.waypointRef}` : ""}</div>
           </div>
-          <div class="outcome" style="background:${col};">${outcome}</div>
+          <div class="pill" style="background:${col};">${r.outcome}</div>
+        </div>
+        ${r.resultShot?.photo ? `
+          <div class="graphwrap">
+            <div class="graphlabel">SENSOR SESSION${r.resultShot.dateRange ? ` \u00b7 ${r.resultShot.dateRange}` : ""}</div>
+            <img src="${r.resultShot.photo}" class="graph" />
+          </div>` : ""}
+        ${r.outcomeNote ? `<div class="note"><b>Technician note.</b> ${r.outcomeNote}</div>` : ""}
+      </div>`;
+  }).join("");
+
+  /* Stage 3 & 4 — what was done at each waypoint and what was found */
+  const waypointSections = waypoints.map((w) => {
+    const col = outcomeColour[w.outcome] || "#5B6570";
+    const tests = w.tests || [];
+    return `
+      <div class="block">
+        <div class="blockhead" style="border-left-color:${col};">
+          <div>
+            <div class="btitle">${w.waypointRef} \u00b7 ${w.position || ""}</div>
+            <div class="bsub">${w.linkedBug ? `Raised by sensor ${w.linkedBug}` : "Investigated directly"} \u00b7 ${tests.length} test${tests.length === 1 ? "" : "s"} carried out</div>
+          </div>
+          <div class="pill" style="background:${col};">${w.outcome}</div>
         </div>
 
-        <table class="facts">
-          <tr>
-            <td>SESSION ID</td><td class="mono">${d.sessionId || "\u2014"}</td>
-            <td>DEPLOYED</td><td>${d.timestamp?.date || "\u2014"}</td>
-          </tr>
-          <tr>
-            <td>COORDINATES</td><td class="mono">${d.gps && d.gps.lat !== "Unknown" ? `${d.gps.lat}, ${d.gps.lng}` : "\u2014"}</td>
-            <td>RETRIEVED</td><td>${r ? `${r.timestamp?.date || "\u2014"} (${r.deployedDays ?? "\u2014"} days)` : "still deployed"}</td>
-          </tr>
-          ${pm ? `<tr>
-            <td>PIPE MATERIAL</td><td>${pm.label}</td>
-            <td>EXPECTED FREQUENCY</td><td class="mono">${pm.normal} <span style="color:#5B6570;">(${pm.freq})</span></td>
-          </tr>` : ""}
-          ${r ? `<tr>
-            <td>ID VERIFICATION</td>
-            <td colspan="3" class="${match === null ? "" : match ? "ok" : "bad"}">
-              ${match === null ? "Not confirmed" : match ? `Confirmed \u2014 graph session ${r.resultSessionId} matches deployment` : `MISMATCH \u2014 deployment ${d.sessionId} versus graph ${r.resultSessionId}`}
-            </td>
-          </tr>` : ""}
-          ${cs ? `<tr>
-            <td>CONDITIONS</td>
-            <td colspan="3">
-              <span style="color:${cs.colour};font-weight:700;">${cs.label} (${cs.pct}%)</span>
-              <span style="color:#5B6570;"> \u2014 ${[
-                d.cond_diameter && `\u2300 ${d.cond_diameter}`,
-                d.cond_pressure && `${d.cond_pressure.toLowerCase()} pressure`,
-                d.cond_backfill && `${d.cond_backfill.toLowerCase()} backfill`,
-                d.cond_pipecondition && d.cond_pipecondition.toLowerCase(),
-                d.cond_background && d.cond_background.toLowerCase(),
-                d.cond_consumption && `${d.cond_consumption.toLowerCase()} demand`,
-              ].filter(Boolean).join(", ")}</span>
-            </td>
-          </tr>` : ""}
-          ${r?.outcomeNote ? `<tr><td>TECHNICIAN NOTE</td><td colspan="3">${r.outcomeNote}</td></tr>` : ""}
-        </table>
+        ${tests.length ? tests.map((t) => `
+          <div class="graphwrap">
+            <div class="graphlabel">${t.method}${t.distance ? ` \u00b7 LEAK AT ${t.distance}` : ""}</div>
+            <img src="${t.photo}" class="graph" />
+            ${t.note ? `<div class="graphnote">${t.note}</div>` : ""}
+          </div>`).join("") : `<div class="nograph">No test evidence attached</div>`}
 
-        ${r && r.outcome === "NO LEAK" && cs && cs.pct < 45 ? `
-          <div class="caveat">
-            <b>Qualified result.</b> No leak noise was detected, but listening conditions at this point
-            were poor (${cs.pct}%). ${cs.advice}
+        ${w.pinpointPhoto ? `
+          <div class="pinpoint">
+            <img src="${w.pinpointPhoto}" />
+            <div>
+              <div class="plabel">LEAK POSITION MARKED</div>
+              <div class="mono pcoord">${w.pinpointGps ? `${w.pinpointGps.lat}, ${w.pinpointGps.lng}` : "\u2014"}</div>
+              <div class="pnote">Beacon placed on site at the located position.</div>
+            </div>
           </div>` : ""}
 
-        ${r?.resultShot?.photo ? `
-          <div class="graphwrap">
-            <div class="graphlabel">SESSION RESULTS${r.resultShot.dateRange ? ` \u00b7 ${r.resultShot.dateRange}` : ""}</div>
-            <img src="${r.resultShot.photo}" class="graph" />
-            ${r.resultShot.notes ? `<div class="graphnote">${r.resultShot.notes}</div>` : ""}
-            ${pm && pm.normal !== "\u2014" ? `<div class="acoustic">
-              <b>Reading this graph:</b> on ${pm.label}, leak noise normally peaks around
-              <b>${pm.normal}</b>, within a range of <b>${pm.freq}</b>. Signal loss is ${pm.attenuation},
-              so a leak is detectable to roughly ${pm.spacing.toLowerCase().replace("up to ~", "")} from the sensor.
-              Energy well outside that band is unlikely to be a leak on this material.
-              ${mount && mount.note ? ` Sensor was mounted on ${d.deployAsset.toLowerCase()} \u2014 ${mount.note.toLowerCase()}.` : ""}
-            </div>` : ""}
-          </div>` : r ? `<div class="nograph">No results graph attached</div>` : ""}
-
-        <div class="thumbs">
-          ${d.photo ? `<div class="thumbbox"><img src="${d.photo}" /><span>Deployment point</span></div>` : ""}
-          ${d.sessionShot?.photo ? `<div class="thumbbox"><img src="${d.sessionShot.photo}" /><span>Session started</span></div>` : ""}
-        </div>
+        ${w.outcomeNote ? `<div class="note"><b>Conclusion.</b> ${w.outcomeNote}</div>` : ""}
       </div>`;
   }).join("");
 
   win.document.write(`
-    <!doctype html><html><head><title>${survey.siteName || "Estate"} FIDO Leak Analysis</title>
+    <!doctype html><html><head><title>${survey.siteName || "Estate"} Leak Detection Report</title>
     <style>
       * { box-sizing: border-box; }
       body { font-family: Arial, Helvetica, sans-serif; color:#2B2F33; padding:28px 32px; margin:0; }
@@ -1563,89 +1593,105 @@ function printFidoReport(survey, captures, reviewer) {
       .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
       .brand span { font-weight:700; font-size:16px; }
       h1 { font-size:21px; margin:14px 0 2px; }
-      .meta { color:#5B6570; font-size:12.5px; margin-bottom:16px; }
-      .summary { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }
-      .stat { flex:1; min-width:110px; padding:12px 14px; border-radius:10px; text-align:center; }
+      h2 { font-size:15px; margin:30px 0 4px; padding-bottom:5px; border-bottom:2px solid #DCE3E8; }
+      .lead { font-size:12px; color:#5B6570; margin:0 0 14px; line-height:1.5; }
+      .meta { color:#5B6570; font-size:12.5px; margin-bottom:18px; }
+
+      .summary { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+      .stat { flex:1; min-width:105px; padding:12px 14px; border-radius:10px; text-align:center; }
       .stat b { display:block; font-size:24px; line-height:1.1; }
-      .stat span { font-size:9.5px; letter-spacing:0.4px; font-weight:700; }
+      .stat span { font-size:9px; letter-spacing:0.4px; font-weight:700; }
 
-      .sensor { border:1px solid #DCE3E8; border-radius:10px; padding:0 0 14px; margin-bottom:20px; page-break-inside:avoid; overflow:hidden; }
-      .sensorhead { display:flex; justify-content:space-between; align-items:center;
+      table.cov { width:100%; border-collapse:collapse; font-size:11px; margin-top:8px; }
+      table.cov th { background:#F4F7F9; color:#5B6570; font-size:9px; letter-spacing:0.3px;
+        text-align:left; padding:7px 9px; border:1px solid #DCE3E8; }
+      table.cov td { padding:6px 9px; border:1px solid #DCE3E8; }
+
+      .block { border:1px solid #DCE3E8; border-radius:10px; margin-bottom:18px;
+        page-break-inside:avoid; overflow:hidden; padding-bottom:14px; }
+      .blockhead { display:flex; justify-content:space-between; align-items:center;
         padding:12px 16px; background:#F4F7F9; border-left:5px solid #5B6570; }
-      .serial { font-family:'Courier New',monospace; font-size:16px; font-weight:700; }
-      .where { font-size:11.5px; color:#5B6570; margin-top:2px; }
-      .outcome { color:#fff; font-size:10.5px; font-weight:700; padding:5px 14px; border-radius:999px; letter-spacing:0.3px; }
+      .btitle { font-size:14px; font-weight:700; }
+      .bsub { font-size:11px; color:#5B6570; margin-top:2px; }
+      .pill { color:#fff; font-size:10px; font-weight:700; padding:5px 13px; border-radius:999px; }
 
-      .facts { width:calc(100% - 32px); margin:12px 16px 0; border-collapse:collapse; font-size:11px; }
-      .facts td { padding:3px 0; vertical-align:top; }
-      .facts td:nth-child(odd) { color:#5B6570; font-size:9px; letter-spacing:0.3px; width:110px; padding-top:5px; }
-      .mono { font-family:'Courier New',monospace; }
-      .ok { color:#1B9C6E; font-weight:700; }
-      .bad { color:#D6485A; font-weight:700; }
-
-      .graphwrap { margin:14px 16px 0; }
+      .graphwrap { margin:13px 16px 0; }
       .graphlabel { font-size:9px; font-weight:700; color:#5B6570; letter-spacing:0.4px; margin-bottom:5px; }
-      .graph { width:100%; height:auto; max-height:440px; object-fit:contain;
+      .graph { width:100%; height:auto; max-height:430px; object-fit:contain;
         border:1px solid #DCE3E8; border-radius:8px; background:#fff; display:block; }
       .graphnote { font-size:11px; color:#5B6570; margin-top:6px; font-style:italic; }
-      .acoustic { margin-top:8px; padding:9px 12px; background:#F4F7F9; border-radius:7px;
-        font-size:10.5px; color:#2B2F33; line-height:1.5; }
-      .caveat { margin:12px 16px 0; padding:10px 13px; background:#FBE6E9; border-radius:7px;
-        font-size:10.5px; color:#2B2F33; line-height:1.5; border-left:3px solid #D6485A; }
-      .nograph { margin:14px 16px 0; padding:20px; text-align:center; border:1px dashed #DCE3E8;
+      .nograph { margin:13px 16px 0; padding:18px; text-align:center; border:1px dashed #DCE3E8;
         border-radius:8px; color:#A6AFB6; font-size:11px; }
 
-      .thumbs { display:flex; gap:10px; margin:12px 16px 0; }
-      .thumbbox { text-align:center; }
-      .thumbbox img { width:120px; height:90px; object-fit:cover; border-radius:6px; display:block; }
-      .thumbbox span { font-size:9px; color:#5B6570; display:block; margin-top:3px; }
+      .pinpoint { display:flex; gap:14px; margin:13px 16px 0; padding:12px;
+        background:#FBE6E9; border-radius:9px; align-items:center; }
+      .pinpoint img { width:150px; height:112px; object-fit:cover; border-radius:7px; flex-shrink:0; }
+      .plabel { font-size:9px; font-weight:700; color:#D6485A; letter-spacing:0.4px; }
+      .pcoord { font-size:14px; font-weight:700; margin-top:3px; }
+      .pnote { font-size:10.5px; color:#5B6570; margin-top:4px; }
 
-      .footer { margin-top:14px; font-size:11px; color:#5B6570; }
-      .method { margin-top:22px; padding:12px 16px; background:#F4F7F9; border-radius:9px;
-        font-size:10.5px; color:#5B6570; line-height:1.55; page-break-inside:avoid; }
-      .method b { color:#2B2F33; }
-      @media print { .no-print { display:none; } .sensor { page-break-inside:avoid; } }
+      .note { margin:12px 16px 0; padding:10px 13px; background:#F4F7F9; border-radius:7px;
+        font-size:11.5px; line-height:1.5; }
+      .note b { color:#2B2F33; }
+      .mono { font-family:'Courier New', monospace; }
+      .footer { margin-top:26px; padding-top:12px; border-top:1px solid #DCE3E8;
+        font-size:10.5px; color:#5B6570; line-height:1.5; }
+      @media print { .no-print { display:none; } .block { page-break-inside:avoid; } }
     </style></head><body>
       <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
-      <h1>${survey.siteName || "Untitled Site"} \u2014 FIDO Leak Analysis</h1>
+      <h1>${survey.siteName || "Untitled Site"} \u2014 Leak Detection Report</h1>
       <div class="meta">
-        Survey: ${survey.surveyName || "\u2014"} &nbsp;\u00b7&nbsp; Address: ${survey.address || "\u2014"} &nbsp;\u00b7&nbsp;
-        Technician: ${survey.tech || "\u2014"} &nbsp;\u00b7&nbsp; Verified by: ${reviewer || "\u2014"} &nbsp;\u00b7&nbsp;
-        Generated: ${new Date().toLocaleDateString()}
+        ${survey.address ? `${survey.address} &nbsp;\u00b7&nbsp;` : ""}
+        Survey: ${survey.surveyName || "\u2014"} &nbsp;\u00b7&nbsp;
+        Technician: ${survey.tech || "\u2014"} &nbsp;\u00b7&nbsp;
+        Report date: ${new Date().toLocaleDateString()}
       </div>
 
+      <h2>Summary</h2>
+      <p class="lead">
+        ${deployments.length} acoustic sensor${deployments.length === 1 ? " was" : "s were"} deployed across the estate.
+        ${flagged.length ? `${flagged.length} point${flagged.length === 1 ? "" : "s"} returned a signal warranting further investigation.` : "No points returned a signal warranting further investigation."}
+        ${waypoints.length ? ` ${waypoints.length} waypoint${waypoints.length === 1 ? " was" : "s were"} opened and investigated on site.` : ""}
+        ${confirmed.length ? ` ${confirmed.length} leak${confirmed.length === 1 ? " was" : "s were"} confirmed and marked for repair.` : ""}
+      </p>
       <div class="summary">
-        ${Object.entries(counts).filter(([, n]) => n > 0).map(([k, n]) => `
+        <div class="stat" style="background:#F4F7F9;">
+          <b>${deployments.length}</b><span style="color:#5B6570;">SENSORS DEPLOYED</span>
+        </div>
+        ${Object.entries(counts).map(([k, n]) => `
           <div class="stat" style="background:${outcomeColour[k]}18;">
             <b style="color:${outcomeColour[k]};">${n}</b>
             <span style="color:${outcomeColour[k]};">${k}</span>
           </div>`).join("")}
-        <div class="stat" style="background:#F4F7F9;">
-          <b>${entries.length}</b><span style="color:#5B6570;">SENSORS DEPLOYED</span>
-        </div>
+        ${confirmed.length ? `<div class="stat" style="background:#FBE6E9;">
+          <b style="color:#D6485A;">${confirmed.length}</b><span style="color:#D6485A;">LEAKS CONFIRMED</span>
+        </div>` : ""}
       </div>
 
-      ${sections}
+      <h2>1. Survey coverage</h2>
+      <p class="lead">Every sensor deployed during this survey, where it was placed and what it returned.</p>
+      <table class="cov">
+        <thead><tr><th>Sensor</th><th>Location</th><th>Deployed on</th><th>Date</th><th>Duration</th><th>Result</th></tr></thead>
+        <tbody>${coverageRows || `<tr><td colspan="6">No deployments recorded.</td></tr>`}</tbody>
+      </table>
 
-      <div class="method">
-        <b>Note on acoustic ranges.</b> Leak noise frequency and how far it travels depend on the pipe
-        material. Metallic pipe carries leak sound at higher frequency and over long distances; plastic
-        pipe produces lower frequency noise that attenuates quickly. Frequency figures quoted against each
-        sensor are from Gutermann leak detection theory and are used to guide interpretation and sensor
-        spacing. They are not device thresholds \u2014 the level at which a given logger registers a leak
-        also depends on mount point, pressure, pipe diameter, depth and soil.
-        <br/><br/>
-        <b>Listening conditions.</b> Good quality leak noise comes from high pressure, hard backfill,
-        clean metallic pipe of small diameter, and a quiet network. Poor quality leak noise comes from
-        low pressure, soft backfill, encrusted or lined pipe, large diameter or plastic pipe, nearby
-        pressure reducing or throttled valves, and high consumption at the time of the session.
-        Conditions were recorded at each deployment and are stated against each finding, so that a
-        no-leak result obtained under poor conditions is not read as a confirmed absence of a leak.
-      </div>
+      ${flagged.length ? `
+        <h2>2. Points flagged for investigation</h2>
+        <p class="lead">These sensors returned a signal consistent with a possible leak. The session data is shown below.</p>
+        ${flaggedSections}` : ""}
+
+      ${waypoints.length ? `
+        <h2>${flagged.length ? "3" : "2"}. Investigations carried out</h2>
+        <p class="lead">Each flagged area was opened as a numbered waypoint and investigated on site using acoustic correlation, sounding and ground microphone as appropriate.</p>
+        ${waypointSections}` : ""}
+
       <div class="footer">
-        Sensor findings are recorded by the attending technician from the FIDO session results.
-        Session identifiers are cross-checked between deployment and retrieval.
-        Generated by THYNK-H2O Field Capture.
+        Acoustic leak detection identifies leak noise transmitted through the pipe network. Detection is
+        influenced by pipe material, diameter, pressure, backfill, background noise and consumption at the
+        time of the survey; these were recorded for every deployment and are available on request.
+        Confirmed leak positions were marked on site and their coordinates recorded.
+        <br/><br/>
+        Prepared by ${survey.tech || "\u2014"}${reviewer ? `, verified by ${reviewer}` : ""} for ${survey.siteName || "the estate"}.
       </div>
       <div class="no-print" style="margin-top:24px;">
         <button onclick="window.print()" style="background:#0D86F3;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;">Print / Save as PDF</button>
@@ -2267,6 +2313,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   const [fidoMode, setFidoMode] = useState("deploy");
   const [pendingBug, setPendingBug] = useState("");
   const [zoomShot, setZoomShot] = useState(null);
+  const [pendingTestMethod, setPendingTestMethod] = useState("");
 
   const previousForPosition = position.trim()
     ? lookupPrevious(survey.previousReadings, position, "")
@@ -2323,7 +2370,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
     }
     setCaptureError("");
     // Screenshots come from the gallery.
-    if (type === "fido" || type === "amrShot" || type === "fido2Session" || type === "fido2Result") {
+    if (type === "fido" || type === "amrShot" || type === "fido2Session" || type === "fido2Result" || type === "waypointTest") {
       pickTypeRef.current = type;
       galleryInputRef.current?.click();
       return;
@@ -2425,6 +2472,32 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           bugSerial: p.bugSerial || ex.bugSerial || "",
         } : p);
         if (aiFailed) setCaptureError("Couldn't read that screenshot — enter the session ID manually.");
+      } else if (type === "waypointTest") {
+        // A test carried out within a waypoint
+        const photo = await loadDownscaledPhoto(file, 1200);
+        let ex = {};
+        if (pendingTestMethod === "CORRELATION") {
+          try { ex = await extractWithVision(photo, CORRELATION_PROMPT); } catch (e) { /* manual entry */ }
+        }
+        setPending((p) => p ? {
+          ...p,
+          tests: [...(p.tests || []), {
+            method: pendingTestMethod,
+            photo,
+            distance: ex.distance || "",
+            sensorSpacing: ex.sensorSpacing || "",
+            note: ex.notes || "",
+            at: nowStamp(),
+          }],
+        } : p);
+      } else if (type === "waypointPinpoint") {
+        // Beacon placed at the suspected leak position
+        const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
+        setPending((p) => p ? {
+          ...p,
+          pinpointPhoto: photo,
+          pinpointGps: gps || p.gps,
+        } : p);
       } else if (type === "fido2Result") {
         // FIDO 2 results graph at retrieval — AI reads the session ID for cross-check
         const [photo, gps] = await Promise.all([loadDownscaledPhoto(file, 1100), getRealGPS()]);
@@ -2767,6 +2840,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
       ? { ...pending, status: "needs_review" }
       : pending;
     // A confirmed leak, or a session ID that doesn't match, always goes to review
+    if (record.type === "fido2_waypoint" && record.outcome === "LEAK CONFIRMED") {
+      record = { ...record, status: "needs_review" };
+    }
     if (record.type === "fido2_retrieve") {
       const a = (record.sessionId || "").trim().toLowerCase();
       const g = (record.resultSessionId || "").trim().toLowerCase();
@@ -2941,17 +3017,163 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       {[
                         { id: "deploy", label: `Deploy (${available.length})` },
                         { id: "retrieve", label: `Retrieve (${deployed.length})` },
+                        { id: "waypoints", label: `Waypoints (${captures.filter((c) => c.type === "fido2_waypoint").length})` },
                         { id: "board", label: "Board" },
                       ].map((m) => (
                         <button key={m.id} onClick={() => setFidoMode(m.id)} style={{
                           flex: 1, border: "none", cursor: "pointer", padding: "8px 6px", borderRadius: 7,
-                          fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700,
+                          fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700,
                           background: fidoMode === m.id ? "#fff" : "transparent",
                           color: fidoMode === m.id ? C.charcoal : C.charcoalSoft,
                           boxShadow: fidoMode === m.id ? "0 1px 3px rgba(43,47,51,0.12)" : "none"
                         }}>{m.label}</button>
                       ))}
                     </div>
+
+                    {fidoMode === "waypoints" && (() => {
+                      const waypoints = captures.filter((c) => c.type === "fido2_waypoint");
+                      const flagged = captures.filter((c) =>
+                        c.type === "fido2_retrieve" &&
+                        (c.outcome === "SUSPECTED LEAK" || c.outcome === "CONFIRMED LEAK"));
+                      const investigated = new Set(waypoints.map((w) => w.linkedBug).filter(Boolean));
+                      const awaiting = flagged.filter((f) => !investigated.has(f.bugSerial));
+                      return (
+                        <>
+                          {awaiting.length > 0 && (
+                            <>
+                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.review, marginBottom: 6 }}>
+                                FLAGGED \u2014 NEEDS INVESTIGATION
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+                                {awaiting.map((f) => (
+                                  <button key={f.id}
+                                    onClick={() => {
+                                      setPending({
+                                        id: Date.now(),
+                                        type: "fido2_waypoint",
+                                        waypointRef: nextWaypointRef(captures),
+                                        position: f.position,
+                                        reading: "", serial: "", confidence: 0,
+                                        gps: f.gps,
+                                        timestamp: nowStamp(),
+                                        status: "needs_review",
+                                        tech: survey.tech,
+                                        sentAt: null,
+                                        photo: null,
+                                        linkedBug: f.bugSerial,
+                                        triggerOutcome: f.outcome,
+                                        pipeMaterial: f.pipeMaterial || "",
+                                        tests: [],
+                                        pinpointPhoto: null,
+                                        pinpointGps: null,
+                                        outcome: "ONGOING",
+                                        outcomeNote: "",
+                                      });
+                                      setStage("result");
+                                    }}
+                                    style={{
+                                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                                      padding: "12px 13px", borderRadius: 10, cursor: "pointer",
+                                      border: `1.5px solid ${C.review}`, background: C.reviewSoft, textAlign: "left"
+                                    }}>
+                                    <div>
+                                      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, fontWeight: 700, color: C.charcoal }}>
+                                        {f.bugSerial}
+                                      </div>
+                                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 2 }}>
+                                        {f.outcome} \u00b7 {f.position}
+                                      </div>
+                                    </div>
+                                    <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: C.review }}>
+                                      OPEN WAYPOINT
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                            </>
+                          )}
+
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft }}>
+                              WAYPOINTS
+                            </span>
+                            <button
+                              onClick={() => {
+                                if (!position.trim()) { setShake(true); inputRef.current?.focus(); setTimeout(() => setShake(false), 420); return; }
+                                getRealGPS().then((gps) => {
+                                  setPending({
+                                    id: Date.now(),
+                                    type: "fido2_waypoint",
+                                    waypointRef: nextWaypointRef(captures),
+                                    position: position.trim(),
+                                    reading: "", serial: "", confidence: 0,
+                                    gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+                                    timestamp: nowStamp(),
+                                    status: "needs_review",
+                                    tech: survey.tech,
+                                    sentAt: null,
+                                    photo: null,
+                                    linkedBug: "",
+                                    triggerOutcome: "",
+                                    pipeMaterial: "",
+                                    tests: [],
+                                    pinpointPhoto: null,
+                                    pinpointGps: null,
+                                    outcome: "ONGOING",
+                                    outcomeNote: "",
+                                  });
+                                  setStage("result");
+                                });
+                              }}
+                              style={{
+                                border: "none", background: "none", color: C.primary, cursor: "pointer",
+                                fontFamily: "'Inter',sans-serif", fontWeight: 700, fontSize: 11
+                              }}>
+                              + New waypoint
+                            </button>
+                          </div>
+
+                          {waypoints.length === 0 ? (
+                            <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft, textAlign: "center", padding: "16px 0" }}>
+                              No waypoints yet.
+                            </p>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {waypoints.map((w) => {
+                                const st = WAYPOINT_OUTCOMES[w.outcome] || WAYPOINT_OUTCOMES.ONGOING;
+                                return (
+                                  <button key={w.id}
+                                    onClick={() => {
+                                      setCaptures((cs) => cs.filter((c) => c.id !== w.id));
+                                      setPending(w);
+                                      setStage("result");
+                                    }}
+                                    style={{
+                                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                                      padding: "11px 13px", borderRadius: 10, cursor: "pointer",
+                                      border: `1.5px solid ${C.line}`, background: "#fff", textAlign: "left"
+                                    }}>
+                                    <div>
+                                      <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12.5, fontWeight: 700, color: C.charcoal }}>
+                                        {w.waypointRef}
+                                      </div>
+                                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 2 }}>
+                                        {w.position} \u00b7 {(w.tests || []).length} test{(w.tests || []).length === 1 ? "" : "s"}
+                                        {w.linkedBug ? ` \u00b7 from ${w.linkedBug}` : ""}
+                                      </div>
+                                    </div>
+                                    <span style={{
+                                      fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 700,
+                                      color: st.colour, background: st.soft, padding: "3px 9px", borderRadius: 999
+                                    }}>{w.outcome}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
 
                     {fidoMode === "board" && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
@@ -3278,6 +3500,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 {pending.type === "asset" && <><LayoutGrid size={14} /> {pending.assetType || "Asset Mapping"}</>}
                 {pending.type === "fido2_deploy" && <><Radio size={14} /> Deploy {pending.bugSerial}</>}
                 {pending.type === "fido2_retrieve" && <><Radio size={14} /> Retrieve {pending.bugSerial}</>}
+                {pending.type === "fido2_waypoint" && <><MapPin size={14} /> {pending.waypointRef}</>}
               </div>
 
               {captureError && (
@@ -3396,6 +3619,152 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       { key: "batteryVoltage", label: "BATTERY" },
                     ]}
                   />
+                </>
+              )}
+
+              {/* ---- FIDO 2 WAYPOINT ---- */}
+              {pending.type === "fido2_waypoint" && (
+                <>
+                  <div style={{ padding: "12px 14px", borderRadius: 10, background: "#E7F2FE", marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 16, fontWeight: 700, color: C.primaryDeep }}>
+                        {pending.waypointRef}
+                      </span>
+                      <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoalSoft }}>
+                        {pending.gps ? `${pending.gps.lat}, ${pending.gps.lng}` : "GPS unavailable"}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 3 }}>
+                      {pending.position}{pending.linkedBug ? ` \u00b7 raised by ${pending.linkedBug} (${pending.triggerOutcome})` : ""}
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft }}>
+                      TESTS AT THIS WAYPOINT ({(pending.tests || []).length})
+                    </span>
+                  </div>
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                    {Object.keys(WAYPOINT_TESTS).map((m) => (
+                      <button key={m}
+                        onClick={() => { setPendingTestMethod(m); openPicker("waypointTest"); }}
+                        disabled={stage === "scanning"}
+                        style={{
+                          padding: "8px 11px", borderRadius: 8, cursor: "pointer",
+                          border: `1.5px solid ${C.line}`, background: "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 600, color: C.charcoal,
+                          display: "flex", alignItems: "center", gap: 5
+                        }}>
+                        {stage === "scanning" && pendingTestMethod === m ? <Loader2 size={11} className="spin" /> : <Camera size={11} />}
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+
+                  {(pending.tests || []).length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 }}>
+                      {pending.tests.map((t, i) => (
+                        <div key={i} style={{ padding: 10, borderRadius: 9, background: C.paper }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+                            <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoal }}>
+                              {t.method}
+                            </span>
+                            <button onClick={() => editField("tests", pending.tests.filter((_, j) => j !== i))}
+                              style={{ border: "none", background: "none", cursor: "pointer", padding: 2 }}>
+                              <X size={12} color={C.charcoalSoft} />
+                            </button>
+                          </div>
+                          <img src={t.photo} alt={t.method}
+                            onClick={() => setZoomShot(t.photo)}
+                            style={{ width: "100%", maxHeight: 190, objectFit: "contain", borderRadius: 7, background: "#fff", cursor: "zoom-in" }} />
+                          {WAYPOINT_TESTS[t.method]?.needsDistance && (
+                            <div style={{ display: "flex", gap: 7, marginTop: 8 }}>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 700, color: C.charcoalSoft }}>LEAK DISTANCE</div>
+                                <input value={t.distance || ""}
+                                  onChange={(e) => editField("tests", pending.tests.map((x, j) => j === i ? { ...x, distance: e.target.value } : x))}
+                                  placeholder="\u2014"
+                                  style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, fontWeight: 700, color: C.charcoal, background: "#fff" }} />
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 700, color: C.charcoalSoft }}>SENSOR SPACING</div>
+                                <input value={t.sensorSpacing || ""}
+                                  onChange={(e) => editField("tests", pending.tests.map((x, j) => j === i ? { ...x, sensorSpacing: e.target.value } : x))}
+                                  placeholder="\u2014"
+                                  style={{ width: "100%", boxSizing: "border-box", padding: "5px 7px", borderRadius: 6, border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, color: C.charcoal, background: "#fff" }} />
+                              </div>
+                            </div>
+                          )}
+                          <input value={t.note || ""}
+                            onChange={(e) => editField("tests", pending.tests.map((x, j) => j === i ? { ...x, note: e.target.value } : x))}
+                            placeholder="What did this test show?"
+                            style={{ width: "100%", boxSizing: "border-box", marginTop: 7, padding: "7px 9px", borderRadius: 7, border: `1.5px solid ${C.line}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal, background: "#fff" }} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{
+                    padding: 11, borderRadius: 11, marginBottom: 12,
+                    border: `1.5px dashed ${pending.pinpointPhoto ? C.approve : C.line}`,
+                    background: pending.pinpointPhoto ? C.approveSoft : C.paper
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: pending.pinpointPhoto ? C.approve : C.charcoal }}>
+                        PINPOINT / BEACON
+                      </span>
+                      <button onClick={() => openPicker("waypointPinpoint")} disabled={stage === "scanning"} style={{
+                        border: "none", background: "none", color: C.primary, cursor: "pointer",
+                        fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 11.5,
+                        display: "flex", alignItems: "center", gap: 4
+                      }}>
+                        <Camera size={13} /> {pending.pinpointPhoto ? "Retake" : "Add"}
+                      </button>
+                    </div>
+                    {pending.pinpointPhoto ? (
+                      <>
+                        <img src={pending.pinpointPhoto} alt="pinpoint"
+                          style={{ width: "100%", maxHeight: 180, objectFit: "cover", borderRadius: 7, marginTop: 9 }} />
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 6 }}>
+                          <MapPin size={11} color={C.approve} />
+                          <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 700, color: C.charcoal }}>
+                            {pending.pinpointGps ? `${pending.pinpointGps.lat}, ${pending.pinpointGps.lng}` : "GPS unavailable"}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 5 }}>
+                        Place a beacon at the suspected leak and photograph it. GPS is recorded at that moment.
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 6 }}>
+                    INVESTIGATION RESULT
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                    {Object.entries(WAYPOINT_OUTCOMES).map(([o, st]) => {
+                      const on = pending.outcome === o;
+                      return (
+                        <button key={o} onClick={() => editField("outcome", o)} style={{
+                          padding: "11px 6px", borderRadius: 9, cursor: "pointer",
+                          border: `1.5px solid ${on ? st.colour : C.line}`,
+                          background: on ? st.soft : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700,
+                          color: on ? st.colour : C.charcoalSoft
+                        }}>{o}</button>
+                      );
+                    })}
+                  </div>
+                  <input value={pending.outcomeNote || ""}
+                    onChange={(e) => editField("outcomeNote", e.target.value)}
+                    placeholder="Conclusion \u2014 what was found and what should happen next?"
+                    style={{
+                      width: "100%", boxSizing: "border-box", marginTop: 9, padding: "9px 11px",
+                      borderRadius: 8, border: `1.5px solid ${C.line}`,
+                      fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal
+                    }} />
                 </>
               )}
 
@@ -4650,6 +5019,10 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {c.type === "replacement" && <><RotateCcw size={10} color={C.primary} /> Replaced</>}
                     {c.type === "exception" && <><AlertTriangle size={10} color={C.review} /> Could not read</>}
                     {c.type === "fido2_deploy" && <><Radio size={10} color={C.primary} /> {c.bugSerial} out</>}
+                    {c.type === "fido2_waypoint" && (() => {
+                      const st = WAYPOINT_OUTCOMES[c.outcome];
+                      return <><MapPin size={10} color={st ? st.colour : C.charcoalSoft} /> {c.waypointRef}</>;
+                    })()}
                     {c.type === "fido2_retrieve" && (() => {
                       const st = FIDO_OUTCOMES[c.outcome];
                       return <><Radio size={10} color={st ? st.colour : C.charcoalSoft} /> {c.outcome || "no finding"}</>;
@@ -4852,6 +5225,70 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
               }}>
                 <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft }}>AI Confidence</span>
                 <MiniGauge value={selected.confidence} color={selected.confidence < 85 ? C.review : C.approve} />
+              </div>
+            )}
+
+            {selected.type === "fido2_waypoint" && (
+              <div style={{ marginBottom: 16 }}>
+                {(() => {
+                  const st = WAYPOINT_OUTCOMES[selected.outcome] || WAYPOINT_OUTCOMES.ONGOING;
+                  return (
+                    <div style={{
+                      padding: "12px 14px", borderRadius: 10, background: st.soft,
+                      border: `1px solid ${st.colour}55`, marginBottom: 11
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 15, fontWeight: 700, color: C.charcoal }}>
+                          {selected.waypointRef}
+                        </span>
+                        <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: st.colour }}>
+                          {selected.outcome}
+                        </span>
+                      </div>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 3 }}>
+                        {selected.position}{selected.linkedBug ? ` \u00b7 raised by ${selected.linkedBug}` : ""}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {(selected.tests || []).map((t, i) => (
+                  <div key={i} style={{ marginBottom: 11, padding: 10, borderRadius: 9, background: C.paper }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoal, marginBottom: 6 }}>
+                      {t.method}{t.distance ? ` \u00b7 leak at ${t.distance}` : ""}
+                    </div>
+                    <img src={t.photo} alt={t.method} onClick={() => setZoomPhoto(t.photo)}
+                      style={{ width: "100%", maxHeight: 300, objectFit: "contain", borderRadius: 7, background: "#fff", cursor: "zoom-in" }} />
+                    {t.note && (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoalSoft, marginTop: 6 }}>{t.note}</div>
+                    )}
+                  </div>
+                ))}
+
+                {selected.pinpointPhoto && (
+                  <div style={{ padding: 11, borderRadius: 9, background: C.flagSoft, border: `1px solid ${C.flag}55`, marginBottom: 11 }}>
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: C.flag, marginBottom: 7 }}>
+                      LEAK POSITION MARKED
+                    </div>
+                    <img src={selected.pinpointPhoto} alt="pinpoint" onClick={() => setZoomPhoto(selected.pinpointPhoto)}
+                      style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 7, cursor: "zoom-in" }} />
+                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal, marginTop: 7 }}>
+                      {selected.pinpointGps ? `${selected.pinpointGps.lat}, ${selected.pinpointGps.lng}` : "\u2014"}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 3 }}>CONCLUSION</div>
+                  {editMode ? (
+                    <input value={selected.outcomeNote || ""} onChange={(e) => updateCapture(selected.id, { outcomeNote: e.target.value })}
+                      style={{ width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: 7, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }} />
+                  ) : (
+                    <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, color: selected.outcomeNote ? C.charcoal : C.charcoalSoft }}>
+                      {selected.outcomeNote || "\u2014"}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
