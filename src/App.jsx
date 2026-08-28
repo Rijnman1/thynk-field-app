@@ -246,6 +246,186 @@ const FIDO_MODES = [
   "CONSUMPTION PROFILING",
 ];
 
+/* Pipe material acoustics. Figures are from published leak-detection research and are
+   material characteristics, not device thresholds — the dB level that constitutes a leak
+   depends on the logger's own scale, mount, pressure, diameter and soil. */
+const PIPE_MATERIALS = {
+  POLYETHYLENE: {
+    label: "Polyethylene / HDPE",
+    freq: "100 \u2013 400 Hz",
+    normal: "250 Hz",
+    attenuation: "~5.5 dB/m",
+    spacing: "Up to ~16 m",
+    survey: "Point to point. Sound every fitting \u2014 signal fades fast.",
+    tone: "#D6485A",
+  },
+  PVC: {
+    label: "PVC / uPVC",
+    freq: "200 \u2013 500 Hz",
+    normal: "300 Hz",
+    attenuation: "~5.5 dB/m",
+    spacing: "Up to ~16 m",
+    survey: "Point to point. Every appurtenance should be sounded.",
+    tone: "#D6485A",
+  },
+  LEAD: {
+    label: "Lead",
+    freq: "200 \u2013 700 Hz",
+    normal: "400 Hz",
+    attenuation: "moderate",
+    spacing: "Short runs \u2014 usually services",
+    survey: "Typically found on old service connections.",
+    tone: "#D98A22",
+  },
+  AC: {
+    label: "AC",
+    freq: "300 \u2013 800 Hz",
+    normal: "500 Hz",
+    attenuation: "between metal and plastic",
+    spacing: "Up to ~60 m",
+    survey: "Sound travels reasonably at good pressure. Max 60\u201390 m.",
+    tone: "#D98A22",
+  },
+  IRON: {
+    label: "Iron",
+    freq: "300 \u2013 1200 Hz",
+    normal: "700 Hz",
+    attenuation: "~0.9\u20132.4 dB/m",
+    spacing: "Up to ~38\u201399 m",
+    survey: "Sound valves and hydrants. Shorten spacing below 40 psi.",
+    tone: "#1B9C6E",
+  },
+  STEEL: {
+    label: "Steel",
+    freq: "400 \u2013 1500 Hz",
+    normal: "800 Hz",
+    attenuation: "~0.9 dB/m",
+    spacing: "Up to ~99 m",
+    survey: "Good conductor. Pinhole leaks can be very loud.",
+    tone: "#1B9C6E",
+  },
+  COPPER: {
+    label: "Copper",
+    freq: "700 \u2013 2500 Hz",
+    normal: "1800 Hz",
+    attenuation: "~0.9 dB/m",
+    spacing: "Up to ~99 m",
+    survey: "Highest frequency of all. Common on short service runs.",
+    tone: "#1B9C6E",
+  },
+  UNKNOWN: {
+    label: "Unknown",
+    freq: "\u2014",
+    normal: "\u2014",
+    attenuation: "\u2014",
+    spacing: "Treat as plastic",
+    survey: "Assume the worst case \u2014 short spacing, point to point.",
+    tone: "#5B6570",
+  },
+};
+
+/* Conditions that affect whether a leak can be heard at all.
+   Source: Gutermann leak detection theory \u2014 all factors at a minimum except pressure at maximum. */
+const DEPLOY_CONDITIONS = {
+  diameter: {
+    label: "PIPE DIAMETER",
+    hint: "Small is good",
+    options: [
+      { v: "<100mm", good: 2 },
+      { v: "100-200mm", good: 1 },
+      { v: "200-400mm", good: 0 },
+      { v: ">400mm", good: -2 },
+    ],
+  },
+  pressure: {
+    label: "PRESSURE",
+    hint: "High is good",
+    options: [
+      { v: "HIGH", good: 2 },
+      { v: "NORMAL", good: 1 },
+      { v: "LOW", good: -2 },
+    ],
+  },
+  backfill: {
+    label: "BACKFILL",
+    hint: "Hard is good, soft is poor",
+    options: [
+      { v: "HARD", good: 2 },
+      { v: "MIXED", good: 0 },
+      { v: "SOFT / SANDY", good: -2 },
+    ],
+  },
+  pipecondition: {
+    label: "PIPE CONDITION",
+    hint: "Clean is good, encrusted or lined is poor",
+    options: [
+      { v: "CLEAN", good: 2 },
+      { v: "SOME SCALE", good: 0 },
+      { v: "ENCRUSTED / LINED", good: -2 },
+    ],
+  },
+  background: {
+    label: "BACKGROUND NOISE",
+    hint: "PRVs and throttled valves mask leaks",
+    options: [
+      { v: "QUIET", good: 2 },
+      { v: "SOME", good: 0 },
+      { v: "PRV / VALVE NEARBY", good: -2 },
+    ],
+  },
+  consumption: {
+    label: "CONSUMPTION",
+    hint: "High demand drowns out leak noise",
+    options: [
+      { v: "OVERNIGHT / LOW", good: 2 },
+      { v: "MIXED", good: 0 },
+      { v: "DAYTIME / HIGH", good: -2 },
+    ],
+  },
+};
+
+/* Pipe material feeds the same judgement — metallic carries leak noise well, plastic poorly.
+   It is already recorded at deployment, so it scores without asking again. */
+const MATERIAL_ACOUSTIC_SCORE = {
+  COPPER: 2, STEEL: 2, IRON: 2,
+  AC: 0, LEAD: 0,
+  PVC: -2, POLYETHYLENE: -2,
+  UNKNOWN: -1,
+};
+
+/* Rates how favourable the deployment conditions were, so an inconclusive
+   result can be explained rather than just recorded.
+   Source: Gutermann leak detection theory. */
+function conditionScore(c) {
+  const keys = Object.keys(DEPLOY_CONDITIONS);
+  const set = keys.filter((k) => c[`cond_${k}`]);
+  const hasMaterial = c.pipeMaterial && MATERIAL_ACOUSTIC_SCORE[c.pipeMaterial] !== undefined;
+  if (!set.length && !hasMaterial) return null;
+
+  let score = 0;
+  set.forEach((k) => {
+    const opt = DEPLOY_CONDITIONS[k].options.find((o) => o.v === c[`cond_${k}`]);
+    if (opt) score += opt.good;
+  });
+  if (hasMaterial) score += MATERIAL_ACOUSTIC_SCORE[c.pipeMaterial];
+
+  const factors = set.length + (hasMaterial ? 1 : 0);
+  const pct = Math.round(((score + factors * 2) / (factors * 4)) * 100);
+
+  let label, colour, soft, advice;
+  if (pct >= 70) {
+    label = "GOOD LISTENING CONDITIONS"; colour = "#1B9C6E"; soft = "#E4F5EE";
+    advice = "Conditions favour detection. A quiet result is likely to be a genuine no-leak.";
+  } else if (pct >= 40) {
+    label = "FAIR LISTENING CONDITIONS"; colour = "#D98A22"; soft = "#FBF0DE";
+    advice = "Workable, but a quiet result is less conclusive here.";
+  } else {
+    label = "POOR LISTENING CONDITIONS"; colour = "#D6485A"; soft = "#FBE6E9";
+    advice = "A leak may be masked. Consider redeploying overnight or at a quieter point.";
+  }
+  return { pct, label, colour, soft, advice, recorded: factors, total: keys.length + 1 };
+}
+
 /* Findings recorded at retrieval. */
 const FIDO_OUTCOMES = {
   "NO LEAK": { colour: "#1B9C6E", soft: "#E4F5EE" },
@@ -734,6 +914,59 @@ function MiniGauge({ value, color }) {
   );
 }
 
+/* Shows what a leak should sound like on a given pipe material. */
+function PipeAcousticGuide({ material, compact }) {
+  const m = PIPE_MATERIALS[material];
+  if (!m) return null;
+  return (
+    <div style={{
+      padding: compact ? "10px 12px" : 12, borderRadius: 9,
+      background: `${m.tone}12`, border: `1px solid ${m.tone}55`
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 9 }}>
+        <Activity size={12} color={m.tone} />
+        <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: m.tone, letterSpacing: 0.3 }}>
+          LEAK NOISE ON {m.label.toUpperCase()}
+        </span>
+      </div>
+
+      <div style={{
+        display: "flex", alignItems: "baseline", justifyContent: "center", gap: 8,
+        padding: "10px 12px", borderRadius: 8, background: "#fff", marginBottom: 9
+      }}>
+        <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 700, color: C.charcoalSoft }}>
+          EXPECT AROUND
+        </span>
+        <span style={{ fontFamily: "'Space Grotesk',sans-serif", fontSize: 22, fontWeight: 700, color: m.tone }}>
+          {m.normal}
+        </span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div>
+          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 600, color: C.charcoalSoft }}>FREQUENCY RANGE</div>
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal }}>{m.freq}</div>
+        </div>
+        <div>
+          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 600, color: C.charcoalSoft }}>MAX SENSOR SPACING</div>
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 12, fontWeight: 700, color: C.charcoal }}>{m.spacing}</div>
+        </div>
+        <div style={{ gridColumn: "1 / -1" }}>
+          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: 600, color: C.charcoalSoft }}>SIGNAL LOSS</div>
+          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: C.charcoal }}>{m.attenuation}</div>
+        </div>
+      </div>
+
+      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 8, lineHeight: 1.4 }}>
+        {m.survey}
+      </div>
+      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, color: C.charcoalSoft, marginTop: 6, opacity: 0.75 }}>
+        Frequency figures: Gutermann leak detection theory
+      </div>
+    </div>
+  );
+}
+
 /* ---------- optional evidence slot (sensor deployment / consumption profile) ---------- */
 function EvidenceSlot({ title, promptText, value, onChange, fieldsConfig, icon: SlotIcon }) {
   const [status, setStatus] = useState("idle"); // idle | scanning | error
@@ -988,6 +1221,16 @@ function exportExcel(survey, captures, reviewer) {
           "Stage": c.type === "fido2_deploy" ? "DEPLOYED" : "RETRIEVED",
           "Bug Serial": c.bugSerial || "",
           "Deployed On": c.deployAsset || "",
+          "Pipe Material": PIPE_MATERIALS[c.pipeMaterial]?.label || "",
+          "Pipe Diameter": c.cond_diameter || "",
+          "Pressure": c.cond_pressure || "",
+          "Backfill": c.cond_backfill || "",
+          "Pipe Condition": c.cond_pipecondition || "",
+          "Background Noise": c.cond_background || "",
+          "Consumption": c.cond_consumption || "",
+          "Listening Conditions": (() => { const s = conditionScore(c); return s ? `${s.label} (${s.pct}%)` : ""; })(),
+          "Normal Leak Frequency": PIPE_MATERIALS[c.pipeMaterial]?.normal || "",
+          "Frequency Range": PIPE_MATERIALS[c.pipeMaterial]?.freq || "",
           "Session Mode": c.fidoMode || "",
           "Session ID": c.sessionId || "",
           "Session ID On Graph": c.resultSessionId || "",
@@ -998,7 +1241,7 @@ function exportExcel(survey, captures, reviewer) {
           ...trailing(c),
         };
       });
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 21 }, { wch: 13 }, { wch: 19 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 20 }, { wch: 15 }, { wch: 22 }, { wch: 21 }, { wch: 13 }, { wch: 19 }, { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 34 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "fido") {
     sheetName = "FIDO Deployments";
     fileSuffix = "fido_leak_analysis";
@@ -1060,6 +1303,10 @@ function exportExcel(survey, captures, reviewer) {
           Position: d.position || "",
           Latitude: d.gps?.lat && d.gps.lat !== "Unknown" ? d.gps.lat : "",
           Longitude: d.gps?.lng && d.gps.lng !== "Unknown" ? d.gps.lng : "",
+          "Pipe Material": PIPE_MATERIALS[d.pipeMaterial]?.label || "",
+          "Listening Conditions": (() => { const s = conditionScore(d); return s ? `${s.label} (${s.pct}%)` : ""; })(),
+          "Normal Frequency": PIPE_MATERIALS[d.pipeMaterial]?.normal || "",
+          "Frequency Range": PIPE_MATERIALS[d.pipeMaterial]?.freq || "",
           "Session Mode": d.fidoMode || "",
           "Session ID": d.sessionId || "",
           "Deployed": d.timestamp?.date || "",
@@ -1075,8 +1322,8 @@ function exportExcel(survey, captures, reviewer) {
       const fWs = XLSX.utils.json_to_sheet(findingRows);
       fWs["!cols"] = [
         { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 13 }, { wch: 13 },
-        { wch: 21 }, { wch: 14 }, { wch: 13 }, { wch: 13 }, { wch: 11 }, { wch: 15 },
-        { wch: 18 }, { wch: 34 }, { wch: 14 },
+        { wch: 15 }, { wch: 20 }, { wch: 21 }, { wch: 14 }, { wch: 13 }, { wch: 13 },
+        { wch: 11 }, { wch: 15 }, { wch: 18 }, { wch: 34 }, { wch: 14 },
       ];
       XLSX.utils.book_append_sheet(wb, fWs, "Leak Findings");
     }
@@ -1182,6 +1429,220 @@ function exportAssetCSV(survey, captures) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/* FIDO leak analysis report — results graphs rendered large enough to actually read */
+function printFidoReport(survey, captures, reviewer) {
+  const win = window.open("", "_blank", "width=1000,height=1100");
+  if (!win) return;
+
+  const status = buildBugStatus(captures);
+  const entries = Object.values(status).filter((b) => b.deployment);
+
+  const counts = { "NO LEAK": 0, "SUSPECTED LEAK": 0, "CONFIRMED LEAK": 0, "INCONCLUSIVE": 0, "STILL DEPLOYED": 0 };
+  entries.forEach((b) => {
+    if (!b.retrieval) counts["STILL DEPLOYED"]++;
+    else counts[b.retrieval.outcome] = (counts[b.retrieval.outcome] || 0) + 1;
+  });
+
+  const outcomeColour = {
+    "NO LEAK": "#1B9C6E",
+    "SUSPECTED LEAK": "#D98A22",
+    "CONFIRMED LEAK": "#D6485A",
+    "INCONCLUSIVE": "#5B6570",
+    "STILL DEPLOYED": "#0D86F3",
+  };
+
+  // Leaks first — the estate should see the findings that matter at the front
+  const order = { "CONFIRMED LEAK": 0, "SUSPECTED LEAK": 1, "INCONCLUSIVE": 2, "NO LEAK": 3 };
+  const sorted = [...entries].sort((a, b) => {
+    const ao = a.retrieval ? (order[a.retrieval.outcome] ?? 4) : 5;
+    const bo = b.retrieval ? (order[b.retrieval.outcome] ?? 4) : 5;
+    return ao - bo;
+  });
+
+  const sections = sorted.map((b) => {
+    const d = b.deployment;
+    const r = b.retrieval;
+    const outcome = r ? (r.outcome || "NO FINDING RECORDED") : "STILL DEPLOYED";
+    const col = outcomeColour[outcome] || "#5B6570";
+    const a = (d.sessionId || "").trim().toLowerCase();
+    const g = (r?.resultSessionId || "").trim().toLowerCase();
+    const match = a && g ? a === g : null;
+    const pm = PIPE_MATERIALS[d.pipeMaterial];
+    const cs = conditionScore(d);
+
+    return `
+      <div class="sensor">
+        <div class="sensorhead" style="border-left-color:${col};">
+          <div>
+            <div class="serial">${b.serial}</div>
+            <div class="where">${d.deployAsset || "\u2014"} \u00b7 ${d.position || "\u2014"}${d.fidoMode ? ` \u00b7 ${d.fidoMode}` : ""}</div>
+          </div>
+          <div class="outcome" style="background:${col};">${outcome}</div>
+        </div>
+
+        <table class="facts">
+          <tr>
+            <td>SESSION ID</td><td class="mono">${d.sessionId || "\u2014"}</td>
+            <td>DEPLOYED</td><td>${d.timestamp?.date || "\u2014"}</td>
+          </tr>
+          <tr>
+            <td>COORDINATES</td><td class="mono">${d.gps && d.gps.lat !== "Unknown" ? `${d.gps.lat}, ${d.gps.lng}` : "\u2014"}</td>
+            <td>RETRIEVED</td><td>${r ? `${r.timestamp?.date || "\u2014"} (${r.deployedDays ?? "\u2014"} days)` : "still deployed"}</td>
+          </tr>
+          ${pm ? `<tr>
+            <td>PIPE MATERIAL</td><td>${pm.label}</td>
+            <td>EXPECTED FREQUENCY</td><td class="mono">${pm.normal} <span style="color:#5B6570;">(${pm.freq})</span></td>
+          </tr>` : ""}
+          ${r ? `<tr>
+            <td>ID VERIFICATION</td>
+            <td colspan="3" class="${match === null ? "" : match ? "ok" : "bad"}">
+              ${match === null ? "Not confirmed" : match ? `Confirmed \u2014 graph session ${r.resultSessionId} matches deployment` : `MISMATCH \u2014 deployment ${d.sessionId} versus graph ${r.resultSessionId}`}
+            </td>
+          </tr>` : ""}
+          ${cs ? `<tr>
+            <td>CONDITIONS</td>
+            <td colspan="3">
+              <span style="color:${cs.colour};font-weight:700;">${cs.label} (${cs.pct}%)</span>
+              <span style="color:#5B6570;"> \u2014 ${[
+                d.cond_diameter && `\u2300 ${d.cond_diameter}`,
+                d.cond_pressure && `${d.cond_pressure.toLowerCase()} pressure`,
+                d.cond_backfill && `${d.cond_backfill.toLowerCase()} backfill`,
+                d.cond_pipecondition && d.cond_pipecondition.toLowerCase(),
+                d.cond_background && d.cond_background.toLowerCase(),
+                d.cond_consumption && `${d.cond_consumption.toLowerCase()} demand`,
+              ].filter(Boolean).join(", ")}</span>
+            </td>
+          </tr>` : ""}
+          ${r?.outcomeNote ? `<tr><td>TECHNICIAN NOTE</td><td colspan="3">${r.outcomeNote}</td></tr>` : ""}
+        </table>
+
+        ${r && r.outcome === "NO LEAK" && cs && cs.pct < 45 ? `
+          <div class="caveat">
+            <b>Qualified result.</b> No leak noise was detected, but listening conditions at this point
+            were poor (${cs.pct}%). ${cs.advice}
+          </div>` : ""}
+
+        ${r?.resultShot?.photo ? `
+          <div class="graphwrap">
+            <div class="graphlabel">SESSION RESULTS${r.resultShot.dateRange ? ` \u00b7 ${r.resultShot.dateRange}` : ""}</div>
+            <img src="${r.resultShot.photo}" class="graph" />
+            ${r.resultShot.notes ? `<div class="graphnote">${r.resultShot.notes}</div>` : ""}
+            ${pm && pm.normal !== "\u2014" ? `<div class="acoustic">
+              <b>Reading this graph:</b> on ${pm.label}, leak noise normally peaks around
+              <b>${pm.normal}</b>, within a range of <b>${pm.freq}</b>. Signal loss is ${pm.attenuation},
+              so a leak is detectable to roughly ${pm.spacing.toLowerCase().replace("up to ~", "")} from the sensor.
+              Energy well outside that band is unlikely to be a leak on this material.
+            </div>` : ""}
+          </div>` : r ? `<div class="nograph">No results graph attached</div>` : ""}
+
+        <div class="thumbs">
+          ${d.photo ? `<div class="thumbbox"><img src="${d.photo}" /><span>Deployment point</span></div>` : ""}
+          ${d.sessionShot?.photo ? `<div class="thumbbox"><img src="${d.sessionShot.photo}" /><span>Session started</span></div>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+
+  win.document.write(`
+    <!doctype html><html><head><title>${survey.siteName || "Estate"} FIDO Leak Analysis</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { font-family: Arial, Helvetica, sans-serif; color:#2B2F33; padding:28px 32px; margin:0; }
+      .brand { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+      .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
+      .brand span { font-weight:700; font-size:16px; }
+      h1 { font-size:21px; margin:14px 0 2px; }
+      .meta { color:#5B6570; font-size:12.5px; margin-bottom:16px; }
+      .summary { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:20px; }
+      .stat { flex:1; min-width:110px; padding:12px 14px; border-radius:10px; text-align:center; }
+      .stat b { display:block; font-size:24px; line-height:1.1; }
+      .stat span { font-size:9.5px; letter-spacing:0.4px; font-weight:700; }
+
+      .sensor { border:1px solid #DCE3E8; border-radius:10px; padding:0 0 14px; margin-bottom:20px; page-break-inside:avoid; overflow:hidden; }
+      .sensorhead { display:flex; justify-content:space-between; align-items:center;
+        padding:12px 16px; background:#F4F7F9; border-left:5px solid #5B6570; }
+      .serial { font-family:'Courier New',monospace; font-size:16px; font-weight:700; }
+      .where { font-size:11.5px; color:#5B6570; margin-top:2px; }
+      .outcome { color:#fff; font-size:10.5px; font-weight:700; padding:5px 14px; border-radius:999px; letter-spacing:0.3px; }
+
+      .facts { width:calc(100% - 32px); margin:12px 16px 0; border-collapse:collapse; font-size:11px; }
+      .facts td { padding:3px 0; vertical-align:top; }
+      .facts td:nth-child(odd) { color:#5B6570; font-size:9px; letter-spacing:0.3px; width:110px; padding-top:5px; }
+      .mono { font-family:'Courier New',monospace; }
+      .ok { color:#1B9C6E; font-weight:700; }
+      .bad { color:#D6485A; font-weight:700; }
+
+      .graphwrap { margin:14px 16px 0; }
+      .graphlabel { font-size:9px; font-weight:700; color:#5B6570; letter-spacing:0.4px; margin-bottom:5px; }
+      .graph { width:100%; height:auto; max-height:440px; object-fit:contain;
+        border:1px solid #DCE3E8; border-radius:8px; background:#fff; display:block; }
+      .graphnote { font-size:11px; color:#5B6570; margin-top:6px; font-style:italic; }
+      .acoustic { margin-top:8px; padding:9px 12px; background:#F4F7F9; border-radius:7px;
+        font-size:10.5px; color:#2B2F33; line-height:1.5; }
+      .caveat { margin:12px 16px 0; padding:10px 13px; background:#FBE6E9; border-radius:7px;
+        font-size:10.5px; color:#2B2F33; line-height:1.5; border-left:3px solid #D6485A; }
+      .nograph { margin:14px 16px 0; padding:20px; text-align:center; border:1px dashed #DCE3E8;
+        border-radius:8px; color:#A6AFB6; font-size:11px; }
+
+      .thumbs { display:flex; gap:10px; margin:12px 16px 0; }
+      .thumbbox { text-align:center; }
+      .thumbbox img { width:120px; height:90px; object-fit:cover; border-radius:6px; display:block; }
+      .thumbbox span { font-size:9px; color:#5B6570; display:block; margin-top:3px; }
+
+      .footer { margin-top:14px; font-size:11px; color:#5B6570; }
+      .method { margin-top:22px; padding:12px 16px; background:#F4F7F9; border-radius:9px;
+        font-size:10.5px; color:#5B6570; line-height:1.55; page-break-inside:avoid; }
+      .method b { color:#2B2F33; }
+      @media print { .no-print { display:none; } .sensor { page-break-inside:avoid; } }
+    </style></head><body>
+      <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
+      <h1>${survey.siteName || "Untitled Site"} \u2014 FIDO Leak Analysis</h1>
+      <div class="meta">
+        Survey: ${survey.surveyName || "\u2014"} &nbsp;\u00b7&nbsp; Address: ${survey.address || "\u2014"} &nbsp;\u00b7&nbsp;
+        Technician: ${survey.tech || "\u2014"} &nbsp;\u00b7&nbsp; Verified by: ${reviewer || "\u2014"} &nbsp;\u00b7&nbsp;
+        Generated: ${new Date().toLocaleDateString()}
+      </div>
+
+      <div class="summary">
+        ${Object.entries(counts).filter(([, n]) => n > 0).map(([k, n]) => `
+          <div class="stat" style="background:${outcomeColour[k]}18;">
+            <b style="color:${outcomeColour[k]};">${n}</b>
+            <span style="color:${outcomeColour[k]};">${k}</span>
+          </div>`).join("")}
+        <div class="stat" style="background:#F4F7F9;">
+          <b>${entries.length}</b><span style="color:#5B6570;">SENSORS DEPLOYED</span>
+        </div>
+      </div>
+
+      ${sections}
+
+      <div class="method">
+        <b>Note on acoustic ranges.</b> Leak noise frequency and how far it travels depend on the pipe
+        material. Metallic pipe carries leak sound at higher frequency and over long distances; plastic
+        pipe produces lower frequency noise that attenuates quickly. Frequency figures quoted against each
+        sensor are from Gutermann leak detection theory and are used to guide interpretation and sensor
+        spacing. They are not device thresholds \u2014 the level at which a given logger registers a leak
+        also depends on mount point, pressure, pipe diameter, depth and soil.
+        <br/><br/>
+        <b>Listening conditions.</b> Good quality leak noise comes from high pressure, hard backfill,
+        clean metallic pipe of small diameter, and a quiet network. Poor quality leak noise comes from
+        low pressure, soft backfill, encrusted or lined pipe, large diameter or plastic pipe, nearby
+        pressure reducing or throttled valves, and high consumption at the time of the session.
+        Conditions were recorded at each deployment and are stated against each finding, so that a
+        no-leak result obtained under poor conditions is not read as a confirmed absence of a leak.
+      </div>
+      <div class="footer">
+        Sensor findings are recorded by the attending technician from the FIDO session results.
+        Session identifiers are cross-checked between deployment and retrieval.
+        Generated by THYNK-H2O Field Capture.
+      </div>
+      <div class="no-print" style="margin-top:24px;">
+        <button onclick="window.print()" style="background:#0D86F3;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-weight:600;cursor:pointer;">Print / Save as PDF</button>
+      </div>
+    </body></html>
+  `);
+  win.document.close();
 }
 
 /* Asset register PDF — one card per asset so a person can go and find it */
@@ -1795,6 +2256,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   const [showException, setShowException] = useState(false);
   const [fidoMode, setFidoMode] = useState("deploy");
   const [pendingBug, setPendingBug] = useState("");
+  const [zoomShot, setZoomShot] = useState(null);
 
   const previousForPosition = position.trim()
     ? lookupPrevious(survey.previousReadings, position, "")
@@ -1936,6 +2398,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           fidoMode: p?.fidoMode || "",
           sessionId: p?.sessionId || "",
           sessionShot: p?.sessionShot || null,
+          pipeMaterial: p?.pipeMaterial || "",
         }));
       } else if (type === "fido2Session") {
         // FIDO 2 session screenshot — AI reads the session ID
@@ -2317,6 +2780,16 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
 
   return (
     <div style={{ display: "flex", justifyContent: "center", padding: "20px 4px" }}>
+      {zoomShot && (
+        <div
+          onClick={() => setZoomShot(null)}
+          style={{
+            position: "fixed", inset: 0, background: "rgba(20,22,24,0.94)", zIndex: 200,
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 14, cursor: "zoom-out"
+          }}>
+          <img src={zoomShot} alt="Graph full size" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }} />
+        </div>
+      )}
       <div style={{
         width: 340, borderRadius: 28, border: `8px solid ${C.charcoal}`, background: "#fff",
         boxShadow: "0 20px 40px -18px rgba(43,47,51,0.35)", overflow: "hidden"
@@ -2579,6 +3052,13 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                                     deployAsset: d.deployAsset || "",
                                     fidoMode: d.fidoMode || "",
                                     sessionId: d.sessionId || "",
+                                    pipeMaterial: d.pipeMaterial || "",
+                                    cond_diameter: d.cond_diameter || "",
+                                    cond_pressure: d.cond_pressure || "",
+                                    cond_backfill: d.cond_backfill || "",
+                                    cond_pipecondition: d.cond_pipecondition || "",
+                                    cond_background: d.cond_background || "",
+                                    cond_consumption: d.cond_consumption || "",
                                     deployedDays: daysSince(d.id),
                                     resultShot: null,
                                     resultSessionId: "",
@@ -2944,6 +3424,29 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                   </div>
 
                   <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "13px 0 5px" }}>
+                    PIPE MATERIAL
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                    {Object.entries(PIPE_MATERIALS).map(([k, m]) => {
+                      const on = pending.pipeMaterial === k;
+                      return (
+                        <button key={k} onClick={() => editField("pipeMaterial", k)} style={{
+                          padding: "7px 10px", borderRadius: 999, cursor: "pointer",
+                          border: `1.5px solid ${on ? m.tone : C.line}`,
+                          background: on ? `${m.tone}18` : "#fff",
+                          fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: on ? 700 : 600,
+                          color: on ? m.tone : C.charcoalSoft
+                        }}>{m.label}</button>
+                      );
+                    })}
+                  </div>
+                  {pending.pipeMaterial && (
+                    <div style={{ marginTop: 9 }}>
+                      <PipeAcousticGuide material={pending.pipeMaterial} />
+                    </div>
+                  )}
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "13px 0 5px" }}>
                     SESSION MODE
                   </div>
                   <div style={{ display: "flex", gap: 5 }}>
@@ -2960,6 +3463,58 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       );
                     })}
                   </div>
+
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, margin: "14px 0 6px" }}>
+                    LISTENING CONDITIONS
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                    {Object.entries(DEPLOY_CONDITIONS).map(([key, cfg]) => (
+                      <div key={key}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 9, fontWeight: 700, color: C.charcoalSoft }}>{cfg.label}</span>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 8.5, color: C.charcoalSoft, opacity: 0.8 }}>{cfg.hint}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          {cfg.options.map((o) => {
+                            const on = pending[`cond_${key}`] === o.v;
+                            const col = o.good > 0 ? C.approve : o.good === 0 ? C.review : C.flag;
+                            return (
+                              <button key={o.v} onClick={() => editField(`cond_${key}`, on ? "" : o.v)} style={{
+                                flex: 1, padding: "7px 3px", borderRadius: 7, cursor: "pointer",
+                                border: `1.5px solid ${on ? col : C.line}`,
+                                background: on ? `${col}18` : "#fff",
+                                fontFamily: "'Inter',sans-serif", fontSize: 8.5, fontWeight: on ? 700 : 600,
+                                color: on ? col : C.charcoalSoft
+                              }}>{o.v}</button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {(() => {
+                    const s = conditionScore(pending);
+                    if (!s) return null;
+                    return (
+                      <div style={{
+                        marginTop: 10, padding: "10px 12px", borderRadius: 9,
+                        background: s.soft, border: `1px solid ${s.colour}55`
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: s.colour }}>
+                            {s.label}
+                          </span>
+                          <span style={{ fontFamily: "'Space Grotesk',sans-serif", fontSize: 15, fontWeight: 700, color: s.colour }}>
+                            {s.pct}%
+                          </span>
+                        </div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 4, lineHeight: 1.4 }}>
+                          {s.advice}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{
                     marginTop: 13, padding: 11, borderRadius: 11,
@@ -3001,9 +3556,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     )}
                   </div>
 
-                  {(!pending.deployAsset || !pending.sessionId) && (
+                  {(!pending.deployAsset || !pending.pipeMaterial || !pending.sessionId) && (
                     <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.review, textAlign: "center", marginTop: 9 }}>
-                      {!pending.deployAsset ? "Choose what it's deployed on." : "A session ID is needed to link the retrieval later."}
+                      {!pending.deployAsset ? "Choose what it's deployed on." : !pending.pipeMaterial ? "Choose the pipe material." : "A session ID is needed to link the retrieval later."}
                     </p>
                   )}
                 </>
@@ -3028,6 +3583,48 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     </div>
                   </div>
 
+                  {pending.pipeMaterial && (
+                    <div style={{ marginBottom: 11 }}>
+                      <PipeAcousticGuide material={pending.pipeMaterial} compact />
+                    </div>
+                  )}
+
+                  {(() => {
+                    const s = conditionScore(pending);
+                    if (!s) return null;
+                    return (
+                      <div style={{
+                        marginBottom: 11, padding: "10px 12px", borderRadius: 9,
+                        background: s.soft, border: `1px solid ${s.colour}55`
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: s.colour }}>
+                            {s.label}
+                          </span>
+                          <span style={{ fontFamily: "'Space Grotesk',sans-serif", fontSize: 15, fontWeight: 700, color: s.colour }}>
+                            {s.pct}%
+                          </span>
+                        </div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 4, lineHeight: 1.4 }}>
+                          {[
+                            PIPE_MATERIALS[pending.pipeMaterial]?.label,
+                            pending.cond_diameter && `\u2300 ${pending.cond_diameter}`,
+                            pending.cond_pressure && `${pending.cond_pressure.toLowerCase()} pressure`,
+                            pending.cond_backfill && `${pending.cond_backfill.toLowerCase()} backfill`,
+                            pending.cond_pipecondition && `${pending.cond_pipecondition.toLowerCase()}`,
+                            pending.cond_background && `${pending.cond_background.toLowerCase()}`,
+                            pending.cond_consumption && `${pending.cond_consumption.toLowerCase()} demand`,
+                          ].filter(Boolean).join(" \u00b7 ")}
+                        </div>
+                        {s.pct < 45 && (
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 600, color: s.colour, marginTop: 5 }}>
+                            {s.advice}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   <div style={{
                     padding: 11, borderRadius: 11,
                     border: `1.5px dashed ${pending.resultShot ? C.approve : C.line}`,
@@ -3048,7 +3645,12 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     </div>
                     {pending.resultShot && (
                       <>
-                        <img src={pending.resultShot.photo} alt="results" style={{ width: "100%", maxHeight: 190, objectFit: "contain", borderRadius: 7, marginTop: 9, background: "#fff" }} />
+                        <img src={pending.resultShot.photo} alt="results"
+                          onClick={() => setZoomShot(pending.resultShot.photo)}
+                          style={{ width: "100%", maxHeight: 240, objectFit: "contain", borderRadius: 7, marginTop: 9, background: "#fff", cursor: "zoom-in" }} />
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, textAlign: "center", marginTop: 4 }}>
+                          Tap the graph to view it full size
+                        </div>
                         {pending.resultShot.dateRange && (
                           <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoalSoft, marginTop: 6 }}>
                             {pending.resultShot.dateRange}
@@ -3922,6 +4524,8 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   onClick={() => {
                     if (survey.taskType === "assets") {
                       printAssetRegister(survey, scoped, reviewer);
+                    } else if (survey.taskType === "fido2") {
+                      printFidoReport(survey, scoped, reviewer);
                     } else {
                       printReport(survey, scoped, reviewer, counts, pct);
                     }
@@ -3934,7 +4538,7 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     background: disabled ? C.line : C.primary, cursor: disabled ? "not-allowed" : "pointer",
                     color: "#fff", fontFamily: "'Inter',sans-serif", fontWeight: 600, fontSize: 12.5
                   }}>
-                  <Send size={14} /> {survey.taskType === "assets" ? "Asset Register PDF" : "Export PDF"}
+                  <Send size={14} /> {survey.taskType === "assets" ? "Asset Register PDF" : survey.taskType === "fido2" ? "Leak Analysis PDF" : "Export PDF"}
                 </button>
                 {disabled && exportScope === "new" && (
                   <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, textAlign: "center" }}>
@@ -4243,6 +4847,46 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                     {selected.deployAsset || "\u2014"}{selected.fidoMode ? ` \u00b7 ${selected.fidoMode}` : ""}
                   </span>
                 </div>
+
+                {selected.pipeMaterial && (
+                  <div style={{ marginBottom: 10 }}>
+                    <PipeAcousticGuide material={selected.pipeMaterial} compact />
+                  </div>
+                )}
+
+                {(() => {
+                  const s = conditionScore(selected);
+                  if (!s) return null;
+                  return (
+                    <div style={{
+                      marginBottom: 10, padding: "10px 12px", borderRadius: 9,
+                      background: s.soft, border: `1px solid ${s.colour}55`
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: s.colour }}>
+                          {s.label}
+                        </span>
+                        <span style={{ fontFamily: "'Space Grotesk',sans-serif", fontSize: 15, fontWeight: 700, color: s.colour }}>{s.pct}%</span>
+                      </div>
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 4 }}>
+                        {[
+                          PIPE_MATERIALS[selected.pipeMaterial]?.label,
+                          selected.cond_diameter && `\u2300 ${selected.cond_diameter}`,
+                          selected.cond_pressure && `${selected.cond_pressure.toLowerCase()} pressure`,
+                          selected.cond_backfill && `${selected.cond_backfill.toLowerCase()} backfill`,
+                          selected.cond_pipecondition && selected.cond_pipecondition.toLowerCase(),
+                          selected.cond_background && selected.cond_background.toLowerCase(),
+                          selected.cond_consumption && `${selected.cond_consumption.toLowerCase()} demand`,
+                        ].filter(Boolean).join(" \u00b7 ")}
+                      </div>
+                      {selected.outcome === "NO LEAK" && s.pct < 45 && (
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, fontWeight: 700, color: s.colour, marginTop: 5 }}>
+                          A no-leak result under these conditions is not conclusive \u2014 consider a repeat session.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {selected.type === "fido2_deploy" && selected.sessionShot && (
                   <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
