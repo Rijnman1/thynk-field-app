@@ -8,6 +8,7 @@ import {
   validateSegment, shouldDropVertex, formatDepth, accuracyState,
   UTILITY_CLASS, MATERIAL, NODE_TYPE, REGISTRY_NODE_TYPES,
   DEPTH_METHOD, SELECTABLE_DEPTH_METHODS, CAPTURE_TYPE,
+  INSTALLATION, DEPTH_APPLIES, prettyInstall,
   CAPTURE_CONFIG, ACCURACY_GATE_M,
 } from "./lib/routeModel.js";
 
@@ -190,8 +191,9 @@ export default function RouteTrace({ survey, captures, setCaptures, setScreen })
         capture_type: route.capture_type,
         material: payload.material,
         diameter_mm: payload.diameter_mm,
-        observed_depth_m: route.capture_type === CAPTURE_TYPE.NEW_BUILD ? payload.depth_m : null,
-        observed_method: route.capture_type === CAPTURE_TYPE.NEW_BUILD ? payload.depth_method : null,
+        installation: payload.installation,
+        observed_depth_m: route.capture_type === CAPTURE_TYPE.NEW_BUILD && DEPTH_APPLIES.has(payload.installation) ? payload.depth_m : null,
+        observed_method: route.capture_type === CAPTURE_TYPE.NEW_BUILD && DEPTH_APPLIES.has(payload.installation) ? payload.depth_method : null,
         captured_by: survey?.username || "field",
       });
       setSegments((s) => [...s, seg]);
@@ -502,10 +504,12 @@ function NodeCard({ route, fix, firstNode, onCancel, onPlace }) {
   const [material, setMaterial] = useState(MATERIAL.UNKNOWN);
   const [dia, setDia] = useState("");
   const [serial, setSerial] = useState("");
+  const [install, setInstall] = useState(INSTALLATION.BURIED);
   const [notes, setNotes] = useState("");
 
   const isRegistry = type ? REGISTRY_NODE_TYPES.has(type) : false;
   const newBuild = route.capture_type === CAPTURE_TYPE.NEW_BUILD;
+  const buried = DEPTH_APPLIES.has(install);
 
   function submit() {
     onPlace({
@@ -515,8 +519,9 @@ function NodeCard({ route, fix, firstNode, onCancel, onPlace }) {
       accuracy_m: fix.accuracy_m,
       chainage_m: null,
       serial_number: serial.trim() || null,
-      depth_m: depth === "" ? null : Number(depth),
-      depth_method: depth === "" ? DEPTH_METHOD.UNKNOWN : method,
+      installation: install,
+      depth_m: !buried || depth === "" ? null : Number(depth),
+      depth_method: !buried ? DEPTH_METHOD.NOT_APPLICABLE : (depth === "" ? DEPTH_METHOD.UNKNOWN : method),
       material,
       diameter_mm: dia === "" ? null : Number(dia),
       notes: notes.trim(),
@@ -566,37 +571,68 @@ function NodeCard({ route, fix, firstNode, onCancel, onPlace }) {
 
       <div style={{ height: 1, background: C.line, margin: "4px 0 14px" }} />
 
-      <div style={{ ...label, marginBottom: 8 }}>
-        {newBuild ? "DEPTH ON THIS RUN" : "DEPTH AT THIS POINT"}
-      </div>
-      <div style={{
-        fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft,
-        lineHeight: 1.5, marginBottom: 10,
-      }}>
-        {newBuild
-          ? "Measure in the open trench. If the depth changes further along, place a node there and start a new segment."
-          : "Only record what you can actually reach. Leave blank if the pipe isn't accessible here."}
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <div style={{ flex: 1 }}>
-          <input style={input} type="number" step="0.05" value={depth}
-            onChange={(e) => setDepth(e.target.value)} placeholder="0.90" />
-        </div>
-        <div style={{ flex: 1.6 }}>
-          <select style={input} value={method} onChange={(e) => setMethod(e.target.value)}>
-            {SELECTABLE_DEPTH_METHODS.map((m) => (
-              <option key={m} value={m}>{pretty(m)}</option>
-            ))}
-          </select>
-        </div>
+      <div style={{ ...label, marginBottom: 8 }}>HOW DOES THIS RUN SIT?</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
+        {Object.values(INSTALLATION).map((v) => (
+          <button
+            key={v}
+            style={{
+              ...chip(install === v, DEPTH_APPLIES.has(v) ? C.charcoalSoft : C.approve),
+              fontSize: 11, padding: "6px 9px",
+            }}
+            onClick={() => setInstall(v)}
+          >
+            {prettyInstall(v)}
+          </button>
+        ))}
       </div>
 
-      {depth !== "" && method === DEPTH_METHOD.UNKNOWN && (
-        <Warn text="A depth value needs a method. Pick how it was determined." />
+      {!buried && (
+        <div style={{
+          background: C.approveSoft, border: `1px solid ${C.approve}`, borderRadius: 8,
+          padding: "9px 11px", marginBottom: 14,
+          fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoal, lineHeight: 1.45,
+        }}>
+          Visible run — no depth needed. Position is directly observed, so this segment can reach
+          high confidence even on an existing-property trace.
+        </div>
       )}
-      {depth === "" && !newBuild && (
-        <Warn text="No depth here — the run will be interpolated from the nearest access points." tone="soft" />
+
+      {buried && (
+        <>
+          <div style={{ ...label, marginBottom: 8 }}>
+            {newBuild ? "DEPTH ON THIS RUN" : "DEPTH AT THIS POINT"}
+          </div>
+          <div style={{
+            fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft,
+            lineHeight: 1.5, marginBottom: 10,
+          }}>
+            {newBuild
+              ? "Measure in the open trench. If the depth changes further along, place a node there and start a new segment."
+              : "Only record what you can actually reach. Leave blank if the pipe isn't accessible here."}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            <div style={{ flex: 1 }}>
+              <input style={input} type="number" step="0.05" value={depth}
+                onChange={(e) => setDepth(e.target.value)} placeholder="0.90" />
+            </div>
+            <div style={{ flex: 1.6 }}>
+              <select style={input} value={method} onChange={(e) => setMethod(e.target.value)}>
+                {SELECTABLE_DEPTH_METHODS.map((m) => (
+                  <option key={m} value={m}>{pretty(m)}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {depth !== "" && method === DEPTH_METHOD.UNKNOWN && (
+            <Warn text="A depth value needs a method. Pick how it was determined." />
+          )}
+          {depth === "" && !newBuild && (
+            <Warn text="No depth here — the run will be interpolated from the nearest access points." tone="soft" />
+          )}
+        </>
       )}
 
       <div style={{ height: 1, background: C.line, margin: "4px 0 14px" }} />
