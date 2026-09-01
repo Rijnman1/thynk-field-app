@@ -1,7 +1,5 @@
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
-import RouteTrace from "./RouteTrace.jsx";
-import RouteReview from "./RouteReview.jsx";
 import {
   Droplet, Camera, MapPin, Check, X, Flag, Edit3, ArrowRight,
   ArrowLeft, ChevronRight, Loader2, CheckCircle2, AlertTriangle,
@@ -550,10 +548,6 @@ const TASKS = {
     label: "AMR Survey",
     blurb: "Map MUCs and repeaters, and record which meters each one can see.",
     icon: Radio,
-  },  routetrace: {
-    label: "Route Trace",
-    blurb: "Walk and map buried services — pipes, cables, valves and fittings as positioned routes.",
-    icon: MapPin,
   },
   assets: {
     label: "Asset Mapping",
@@ -654,6 +648,74 @@ function parsePreviousReadings(text) {
     if (serialCol !== -1 && cols[serialCol]) map[`S:${cols[serialCol].trim().toUpperCase()}`] = entry;
   }
   return map;
+}
+
+/* Parses an AMR register CSV into what each MUC or repeater is expected to see.
+   Accepts a row per meter, with a column identifying its parent asset. */
+function parseAmrRegister(text) {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
+  if (lines.length < 2) return null;
+  const splitRow = (line) => {
+    const out = []; let cur = ""; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') { cur += '"'; i++; } else inQ = !inQ;
+      } else if (ch === "," && !inQ) { out.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map((s) => s.trim());
+  };
+  const headers = splitRow(lines[0]).map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const findCol = (...names) => {
+    for (const n of names) { const i = headers.indexOf(n); if (i !== -1) return i; }
+    return -1;
+  };
+  const assetCol = findCol("assetserial", "muc", "mucserial", "repeater", "parent", "concentrator", "gateway", "device", "deviceserial");
+  const meterCol = findCol("meterserial", "meter", "serial", "serialnumber");
+  const posCol = findCol("position", "assetposition", "location", "zone");
+  const typeCol = findCol("assettype", "type");
+  if (assetCol === -1 || meterCol === -1) return null;
+
+  const byAsset = {};
+  const meterToAsset = {};
+  let count = 0;
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitRow(lines[i]);
+    const asset = (cols[assetCol] || "").trim().toUpperCase();
+    const meter = (cols[meterCol] || "").trim().toUpperCase();
+    if (!asset || !meter) continue;
+    if (!byAsset[asset]) {
+      byAsset[asset] = {
+        serial: cols[assetCol].trim(),
+        position: posCol !== -1 ? (cols[posCol] || "") : "",
+        assetType: typeCol !== -1 ? (cols[typeCol] || "").toUpperCase() : "",
+        meters: [],
+      };
+    }
+    if (!byAsset[asset].meters.includes(meter)) {
+      byAsset[asset].meters.push(meter);
+      count += 1;
+    }
+    meterToAsset[meter] = asset;
+  }
+  if (!count) return null;
+  return { byAsset, meterToAsset, meterCount: count, assetCount: Object.keys(byAsset).length };
+}
+
+/* Compares what a survey found on an asset against what the register expects. */
+function compareToRegister(register, assetSerial, foundMeters) {
+  if (!register || !assetSerial) return null;
+  const key = assetSerial.trim().toUpperCase();
+  const entry = register.byAsset[key];
+  if (!entry) return { unknownAsset: true, expected: [], missing: [], extra: [], matched: [] };
+  const found = foundMeters.map((m) => (m.serial || "").trim().toUpperCase()).filter(Boolean);
+  const expected = entry.meters;
+  const matched = expected.filter((e) => found.includes(e));
+  const missing = expected.filter((e) => !found.includes(e));
+  const extra = found.filter((f) => !expected.includes(f));
+  return { unknownAsset: false, expected, matched, missing, extra };
 }
 
 /* Finds the previous reading for a capture, by position first then serial. */
@@ -1205,9 +1267,14 @@ function exportExcel(survey, captures, reviewer) {
       "Good Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "GOOD"; }).length,
       "Fair Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "FAIR"; }).length,
       "Weak Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "WEAK"; }).length,
+      "Expected On Register": c.expectedCount ?? "",
+      "Found": c.matchedCount ?? "",
+      "Missing": (c.missingMeters || []).length || "",
+      "Missing Serials": (c.missingMeters || []).join("; "),
+      "Not On Register": (c.extraMeters || []).join("; "),
       ...trailing(c),
     }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "assets") {
     sheetName = "Asset Register";
     fileSuffix = "asset_register";
@@ -1428,6 +1495,27 @@ function exportExcel(survey, captures, reviewer) {
         { wch: 14 }, { wch: 24 }, { wch: 14 },
       ];
       XLSX.utils.book_append_sheet(wb, amrWs, "Linked Meters");
+    }
+
+    // Meters expected on the register that did not report
+    const missingRows = [];
+    captures.filter((c) => c.type === "amr").forEach((c) => {
+      (c.missingMeters || []).forEach((m) => {
+        missingRows.push({
+          Site: survey.siteName || "",
+          "Expected On": c.amrSerial || "",
+          "Asset Type": c.amrAssetType || "",
+          Position: c.position || "",
+          "Meter Serial": m,
+          "Survey Date": c.timestamp?.date || "",
+          Technician: c.tech || "",
+        });
+      });
+    });
+    if (missingRows.length) {
+      const mWs = XLSX.utils.json_to_sheet(missingRows);
+      mWs["!cols"] = [{ wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 13 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, mWs, "Missing Meters");
     }
   }
 
@@ -2024,6 +2112,30 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
   const [confirmDeleteKey, setConfirmDeleteKey] = useState(null);
   const csvInputRef = useRef(null);
   const [csvError, setCsvError] = useState("");
+  const amrCsvRef = useRef(null);
+  const [amrCsvError, setAmrCsvError] = useState("");
+
+  const handleAmrCSV = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setAmrCsvError("");
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const reg = parseAmrRegister(String(reader.result));
+        if (!reg) {
+          setAmrCsvError("No allocation found. The file needs a parent asset column and a meter serial column.");
+          return;
+        }
+        setSurvey((s) => ({ ...s, amrRegister: reg }));
+      } catch (err) {
+        setAmrCsvError("Couldn't read that file. Please check it's a CSV.");
+      }
+    };
+    reader.onerror = () => setAmrCsvError("Couldn't read that file.");
+    reader.readAsText(file);
+  };
 
   const handleCSV = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -2239,6 +2351,42 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
               );
             })}
           </div>
+        </div>
+      )}
+
+      {task === "amr" && (
+        <div style={{ marginBottom: 22 }}>
+          <label style={{ fontFamily: "'Inter',sans-serif", fontSize: 12, fontWeight: 600, color: C.charcoalSoft, display: "block", marginBottom: 6 }}>
+            AMR Register (optional)
+          </label>
+          <input ref={amrCsvRef} type="file" accept=".csv,text/csv" onChange={handleAmrCSV} style={{ display: "none" }} />
+          {(() => {
+            const reg = survey.amrRegister;
+            return (
+              <button
+                onClick={() => amrCsvRef.current?.click()}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "11px 13px", borderRadius: 9,
+                  border: `1.5px dashed ${reg ? C.approve : C.line}`,
+                  background: reg ? C.approveSoft : C.paper, cursor: "pointer"
+                }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: reg ? C.approve : C.charcoal }}>
+                  <FileSpreadsheet size={15} color={reg ? C.approve : C.charcoalSoft} />
+                  {reg ? `${reg.assetCount} assets, ${reg.meterCount} meters loaded` : "Import expected meter allocation"}
+                </span>
+                {reg && <Check size={15} color={C.approve} />}
+              </button>
+            );
+          })()}
+          {amrCsvError ? (
+            <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.flag, marginTop: 6, marginBottom: 0 }}>{amrCsvError}</p>
+          ) : (
+            <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 6, marginBottom: 0 }}>
+              A CSV with one row per meter, and a column for its parent MUC or repeater. The survey will
+              then show which expected meters are missing.
+            </p>
+          )}
         </div>
       )}
 
@@ -2841,11 +2989,24 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   };
 
   const save = () => {
+    // Freeze the register comparison with the capture so review and exports can use it
+    if (pending.type === "amr" && survey.amrRegister) {
+      const cmp = compareToRegister(survey.amrRegister, pending.amrSerial, (pending.amrShots || []).flatMap((s) => s.meters || []));
+      if (cmp && !cmp.unknownAsset) {
+        pending.expectedCount = cmp.expected.length;
+        pending.matchedCount = cmp.matched.length;
+        pending.missingMeters = cmp.missing;
+        pending.extraMeters = cmp.extra;
+      }
+    }
     const flagged = (pending.conditionFlags || []).length > 0;
     let record = flagged && pending.status !== "flagged"
       ? { ...pending, status: "needs_review" }
       : pending;
     // A confirmed leak, or a session ID that doesn't match, always goes to review
+    if (record.type === "amr" && (record.missingMeters || []).length > 0) {
+      record = { ...record, status: "needs_review" };
+    }
     if (record.type === "fido2_waypoint" && record.outcome === "LEAK CONFIRMED") {
       record = { ...record, status: "needs_review" };
     }
@@ -4522,6 +4683,52 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                             </div>
                           );
                         })()}
+
+                        {(() => {
+                          const cmp = compareToRegister(
+                            survey.amrRegister,
+                            pending.amrSerial,
+                            pending.amrShots.flatMap((s) => s.meters || [])
+                          );
+                          if (!cmp) return null;
+                          if (cmp.unknownAsset) {
+                            return (
+                              <div style={{
+                                padding: "9px 11px", borderRadius: 8, background: C.reviewSoft,
+                                fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 600, color: C.review, textAlign: "center"
+                              }}>
+                                {pending.amrSerial ? `${pending.amrSerial} is not on the register` : "Enter the asset serial to check against the register"}
+                              </div>
+                            );
+                          }
+                          const ok = cmp.missing.length === 0;
+                          return (
+                            <div style={{
+                              padding: "10px 12px", borderRadius: 9,
+                              background: ok ? C.approveSoft : C.flagSoft,
+                              border: `1px solid ${ok ? C.approve : C.flag}55`
+                            }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: ok ? C.approve : C.flag }}>
+                                  {ok ? "ALL EXPECTED METERS FOUND" : `${cmp.missing.length} EXPECTED METER${cmp.missing.length === 1 ? "" : "S"} MISSING`}
+                                </span>
+                                <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 700, color: ok ? C.approve : C.flag }}>
+                                  {cmp.matched.length}/{cmp.expected.length}
+                                </span>
+                              </div>
+                              {cmp.missing.length > 0 && (
+                                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: C.charcoal, marginTop: 5, lineHeight: 1.5 }}>
+                                  {cmp.missing.join(", ")}
+                                </div>
+                              )}
+                              {cmp.extra.length > 0 && (
+                                <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 9.5, color: C.charcoalSoft, marginTop: 5 }}>
+                                  {cmp.extra.length} not on the register: {cmp.extra.join(", ")}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -5624,6 +5831,30 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                   Tap a screenshot to view it full size and check the readings.
                 </div>
 
+                {(selected.missingMeters || []).length > 0 && (
+                  <div style={{
+                    marginBottom: 11, padding: "10px 12px", borderRadius: 9,
+                    background: C.flagSoft, border: `1px solid ${C.flag}55`
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.flag }}>
+                        {selected.missingMeters.length} EXPECTED METER{selected.missingMeters.length === 1 ? "" : "S"} NOT REPORTING
+                      </span>
+                      <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 700, color: C.flag }}>
+                        {selected.matchedCount}/{selected.expectedCount}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoal, marginTop: 6, lineHeight: 1.6 }}>
+                      {selected.missingMeters.join(", ")}
+                    </div>
+                    {(selected.extraMeters || []).length > 0 && (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 6 }}>
+                        Not on the register: {selected.extraMeters.join(", ")}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {(() => {
                   const mine = (selected.amrShots || []).flatMap((s) => s.meters || []);
                   const bands = { GOOD: 0, FAIR: 0, WEAK: 0 };
@@ -6342,17 +6573,11 @@ export default function App() {
 
       {unlocked && task && screen === "setup" && (
         <SetupScreen survey={survey} setSurvey={setSurvey} onStart={startNewSurvey} onResume={resumeSurvey} resuming={resuming} role={role} task={task} username={username} />
-      )}      
-      {unlocked && task === "routetrace" && screen === "capture" && (
-        <RouteTrace survey={survey} captures={captures} setCaptures={setCaptures} setScreen={setScreen} />
       )}
-      {unlocked && task && task !== "routetrace" && screen === "capture" && (
+      {unlocked && task && screen === "capture" && (
         <CaptureScreen survey={survey} captures={captures} setCaptures={setCaptures} setScreen={setScreen} task={task} />
       )}
-      {unlocked && task === "routetrace" && screen === "office" && (
-        <RouteReview survey={survey} captures={captures} setCaptures={setCaptures} role={role} />
-      )}
-      {unlocked && task && task !== "routetrace" && screen === "office" && role !== "field" && (
+      {unlocked && task && screen === "office" && role !== "field" && (
         <OfficeScreen survey={survey} captures={captures} setCaptures={setCaptures} onDeleteSurvey={deleteCurrentSurvey} />
       )}
     </div>
