@@ -84,15 +84,33 @@ export const REGISTRY_NODE_TYPES = new Set([
   NODE_TYPE.DISTRIBUTION_BOX,
 ]);
 
+/**
+ * Where the service physically runs. Not everything is buried — fire mains,
+ * plant-room pipework and cable trays are often visible, and a visible service
+ * is the strongest position record there is.
+ */
+export const INSTALLATION = {
+  BURIED: 'BURIED',           // in the ground — depth applies
+  IN_DUCT: 'IN_DUCT',         // buried sleeve or duct — depth applies
+  SURFACE: 'SURFACE',         // laid on the ground / against a wall
+  ELEVATED: 'ELEVATED',       // on brackets, piers, gantry, overhead
+  IN_CHAMBER: 'IN_CHAMBER',   // inside a chamber or valve pit
+  IN_BUILDING: 'IN_BUILDING', // plant room, riser, ceiling void
+};
+
+/** Only these need a depth. Everything else you can see. */
+export const DEPTH_APPLIES = new Set([INSTALLATION.BURIED, INSTALLATION.IN_DUCT]);
+
 export const DEPTH_METHOD = {
   MEASURED: 'MEASURED',         // open trench or chamber — physically measured
   LOCATED: 'LOCATED',           // pipe/cable locator with depth function
   ESTIMATED: 'ESTIMATED',       // judged from surface features or local knowledge
   INTERPOLATED: 'INTERPOLATED', // derived between two observed points — never hand-entered
-  UNKNOWN: 'UNKNOWN',           // not determined — honest blank
+  NOT_APPLICABLE: 'NOT_APPLICABLE', // above ground — nothing to measure
+  UNKNOWN: 'UNKNOWN',           // buried but not determined — honest blank
 };
 
-/** Methods a technician may select. INTERPOLATED is system-derived only. */
+/** Methods a technician may select. The other two are system-derived only. */
 export const SELECTABLE_DEPTH_METHODS = [
   DEPTH_METHOD.MEASURED,
   DEPTH_METHOD.LOCATED,
@@ -192,12 +210,14 @@ export function worstAccuracy(vertices = []) {
 // Confidence — derived, overridable DOWN only
 // ---------------------------------------------------------------------------
 
-export function deriveConfidence({ depth_method, vertices = [], capture_type }) {
+export function deriveConfidence({ depth_method, vertices = [], capture_type, installation = INSTALLATION.BURIED }) {
   const acc = worstAccuracy(vertices);
   const accState = accuracyState(acc);
+  const visible = !DEPTH_APPLIES.has(installation);
 
   let byDepth;
-  if (depth_method === DEPTH_METHOD.MEASURED) byDepth = CONFIDENCE.HIGH;
+  if (visible) byDepth = CONFIDENCE.HIGH; // nothing to measure and nothing hidden
+  else if (depth_method === DEPTH_METHOD.MEASURED) byDepth = CONFIDENCE.HIGH;
   else if (depth_method === DEPTH_METHOD.LOCATED) byDepth = CONFIDENCE.MEDIUM;
   else byDepth = CONFIDENCE.LOW; // ESTIMATED, INTERPOLATED or UNKNOWN
 
@@ -210,7 +230,8 @@ export function deriveConfidence({ depth_method, vertices = [], capture_type }) 
   let result = CONFIDENCE_RANK[byDepth] <= CONFIDENCE_RANK[byAcc] ? byDepth : byAcc;
 
   // A recovery trace is never HIGH — we did not see it in the ground.
-  if (capture_type === CAPTURE_TYPE.EXISTING && result === CONFIDENCE.HIGH) {
+  // Above-ground services are the exception: we did see it, so the cap lifts.
+  if (capture_type === CAPTURE_TYPE.EXISTING && result === CONFIDENCE.HIGH && !visible) {
     result = CONFIDENCE.MEDIUM;
   }
   return result;
@@ -247,7 +268,18 @@ export const INTERPOLATION_SPAN_WARN_M = 100;
  * Works out a segment's depth from its bounding nodes.
  * Returns { depth_m, depth_min_m, depth_max_m, depth_method, depth_source }.
  */
-export function resolveSegmentDepth({ capture_type, startNode, endNode, observed_depth_m = null, observed_method = null, length_m = 0 }) {
+export function resolveSegmentDepth({ capture_type, startNode, endNode, observed_depth_m = null, observed_method = null, length_m = 0, installation = INSTALLATION.BURIED }) {
+  // Above ground — there is no depth, and that is a complete answer.
+  if (!DEPTH_APPLIES.has(installation)) {
+    return {
+      depth_m: null,
+      depth_min_m: null,
+      depth_max_m: null,
+      depth_method: DEPTH_METHOD.NOT_APPLICABLE,
+      depth_source: 'ABOVE_GROUND',
+    };
+  }
+
   // New build: the technician measured this run directly.
   if (capture_type === CAPTURE_TYPE.NEW_BUILD && observed_depth_m != null) {
     return {
@@ -302,9 +334,22 @@ export function resolveSegmentDepth({ capture_type, startNode, endNode, observed
   };
 }
 
+const INSTALL_LABEL = {
+  BURIED: 'buried',
+  IN_DUCT: 'in duct',
+  SURFACE: 'on surface',
+  ELEVATED: 'elevated',
+  IN_CHAMBER: 'in chamber',
+  IN_BUILDING: 'in building',
+};
+export function prettyInstall(i) { return INSTALL_LABEL[i] || 'unspecified'; }
+
 /** Human-readable depth for the map label and the PDF plan set. */
 export function formatDepth(segment) {
-  const { depth_m, depth_min_m, depth_max_m, depth_method } = segment;
+  const { depth_m, depth_min_m, depth_max_m, depth_method, installation } = segment;
+  if (depth_method === DEPTH_METHOD.NOT_APPLICABLE) {
+    return `Above ground · ${prettyInstall(installation)}`;
+  }
   if (depth_m == null) return 'Depth unknown';
   if (depth_method === DEPTH_METHOD.INTERPOLATED) {
     if (depth_max_m == null) return `~${depth_min_m} m at access point only`;
@@ -405,6 +450,7 @@ export function createSegment({
   capture_type = CAPTURE_TYPE.EXISTING,
   material = MATERIAL.UNKNOWN,
   diameter_mm = null,
+  installation = INSTALLATION.BURIED,
   // New build only: depth measured along this open trench.
   observed_depth_m = null,
   observed_method = null,
@@ -415,9 +461,9 @@ export function createSegment({
 }) {
   const length_m = segmentLength(vertices);
   const depth = resolveSegmentDepth({
-    capture_type, startNode, endNode, observed_depth_m, observed_method, length_m,
+    capture_type, startNode, endNode, observed_depth_m, observed_method, length_m, installation,
   });
-  const derived = deriveConfidence({ depth_method: depth.depth_method, vertices, capture_type });
+  const derived = deriveConfidence({ depth_method: depth.depth_method, vertices, capture_type, installation });
   return {
     segment_id: newId('SEG'),
     route_id,
@@ -428,6 +474,7 @@ export function createSegment({
     capture_type,
     material,
     diameter_mm,
+    installation,
     depth_m: depth.depth_m,
     depth_min_m: depth.depth_min_m,
     depth_max_m: depth.depth_max_m,
@@ -457,6 +504,7 @@ export function appendVertex(segment, vertex) {
     depth_method: segment.depth_method,
     vertices,
     capture_type: segment.capture_type,
+    installation: segment.installation,
   });
   return {
     ...segment,
@@ -480,6 +528,8 @@ export function validateSegment(segment) {
   if (!segment.start_node_id || !segment.end_node_id) {
     errors.push('Segment must have a start and end node.');
   }
+  const buriedRun = DEPTH_APPLIES.has(segment.installation);
+
   if (!Object.values(DEPTH_METHOD).includes(segment.depth_method)) {
     errors.push('Depth method is mandatory. Use UNKNOWN if not determined.');
   }
@@ -493,7 +543,7 @@ export function validateSegment(segment) {
   // New build: the pipe was visible, so one segment carries one measured depth.
   // A range here means the depth changed along an open trench and the segment
   // should have been split at the point of change.
-  if (segment.capture_type === CAPTURE_TYPE.NEW_BUILD) {
+  if (buriedRun && segment.capture_type === CAPTURE_TYPE.NEW_BUILD) {
     if (segment.depth_min_m != null && segment.depth_max_m != null &&
         segment.depth_min_m !== segment.depth_max_m) {
       errors.push('Depth changes along this run. Split the segment at the point of change.');
@@ -504,7 +554,7 @@ export function validateSegment(segment) {
   }
 
   // Existing trace: interpolation is expected, but say how far it is being stretched.
-  if (segment.capture_type === CAPTURE_TYPE.EXISTING) {
+  if (buriedRun && segment.capture_type === CAPTURE_TYPE.EXISTING) {
     if (segment.depth_source === 'SINGLE_ACCESS_POINT') {
       warnings.push('Depth known at one end only — the rest of this run is assumed.');
     }
@@ -517,7 +567,9 @@ export function validateSegment(segment) {
     }
   }
 
-  if (segment.depth_m == null) warnings.push('No depth recorded — segment will show as low confidence.');
+  if (buriedRun && segment.depth_m == null) {
+    warnings.push('No depth recorded — segment will show as low confidence.');
+  }
   if (segment.material === MATERIAL.UNKNOWN) warnings.push('Material not identified.');
   if (segment.diameter_mm == null) warnings.push('Diameter not recorded.');
   if (accuracyState(segment.worst_accuracy_m) === 'RED') {
@@ -599,6 +651,7 @@ export function toGeoJSON(route, nodes, segments) {
         utility_class: s.utility_class,
         material: s.material,
         diameter_mm: s.diameter_mm,
+        installation: s.installation,
         depth_m: s.depth_m,
         depth_min_m: s.depth_min_m,
         depth_max_m: s.depth_max_m,
