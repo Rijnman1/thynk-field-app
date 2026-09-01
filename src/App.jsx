@@ -650,11 +650,14 @@ function parsePreviousReadings(text) {
   return map;
 }
 
-/* Parses an AMR register CSV into what each MUC or repeater is expected to see.
-   Accepts a row per meter, with a column identifying its parent asset. */
+/* Parses an AMR register CSV. Two shapes are accepted:
+   - an asset register: one row per MUC or repeater, with its location and coordinates
+   - a meter allocation: one row per meter, with a column naming its parent asset */
 function parseAmrRegister(text) {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
+  const clean = text.replace(/^\uFEFF/, "");
+  const lines = clean.split(/\r?\n/).filter((l) => l.trim().length);
   if (lines.length < 2) return null;
+
   const splitRow = (line) => {
     const out = []; let cur = ""; let inQ = false;
     for (let i = 0; i < line.length; i++) {
@@ -667,46 +670,73 @@ function parseAmrRegister(text) {
     out.push(cur);
     return out.map((s) => s.trim());
   };
+
   const headers = splitRow(lines[0]).map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
   const findCol = (...names) => {
     for (const n of names) { const i = headers.indexOf(n); if (i !== -1) return i; }
     return -1;
   };
-  const assetCol = findCol("assetserial", "muc", "mucserial", "repeater", "parent", "concentrator", "gateway", "device", "deviceserial");
-  const meterCol = findCol("meterserial", "meter", "serial", "serialnumber");
-  const posCol = findCol("position", "assetposition", "location", "zone");
-  const typeCol = findCol("assettype", "type");
-  if (assetCol === -1 || meterCol === -1) return null;
 
+  const assetCol = findCol("repeaterserialno", "assetserial", "mucserial", "muc", "repeater",
+    "concentrator", "gateway", "deviceserial", "device", "serial", "serialnumber", "parent");
+  const meterCol = findCol("meterserial", "meter");
+  const descCol = findCol("description", "location", "name", "position", "zone", "street");
+  const typeCol = findCol("assettype", "type");
+  const latCol = findCol("latitude", "lat");
+  const lngCol = findCol("longitude", "lng", "long");
+  const notesCol = findCol("accessnotes", "notes", "access", "comment", "comments", "status");
+
+  if (assetCol === -1) return null;
+
+  // Meter allocation: a separate meter column exists
+  if (meterCol !== -1 && meterCol !== assetCol) {
+    const byAsset = {};
+    let count = 0;
+    for (let i = 1; i < lines.length; i++) {
+      const cols = splitRow(lines[i]);
+      const asset = (cols[assetCol] || "").trim().toUpperCase();
+      const meter = (cols[meterCol] || "").trim().toUpperCase();
+      if (!asset || !meter) continue;
+      if (!byAsset[asset]) {
+        byAsset[asset] = {
+          serial: cols[assetCol].trim(),
+          description: descCol !== -1 ? (cols[descCol] || "") : "",
+          assetType: typeCol !== -1 ? (cols[typeCol] || "").toUpperCase() : "",
+          gps: null, notes: "", meters: [],
+        };
+      }
+      if (!byAsset[asset].meters.includes(meter)) { byAsset[asset].meters.push(meter); count += 1; }
+    }
+    if (!count) return null;
+    return { mode: "allocation", byAsset, meterCount: count, assetCount: Object.keys(byAsset).length };
+  }
+
+  // Asset register: one row per MUC or repeater
   const byAsset = {};
-  const meterToAsset = {};
-  let count = 0;
   for (let i = 1; i < lines.length; i++) {
     const cols = splitRow(lines[i]);
-    const asset = (cols[assetCol] || "").trim().toUpperCase();
-    const meter = (cols[meterCol] || "").trim().toUpperCase();
-    if (!asset || !meter) continue;
-    if (!byAsset[asset]) {
-      byAsset[asset] = {
-        serial: cols[assetCol].trim(),
-        position: posCol !== -1 ? (cols[posCol] || "") : "",
-        assetType: typeCol !== -1 ? (cols[typeCol] || "").toUpperCase() : "",
-        meters: [],
-      };
-    }
-    if (!byAsset[asset].meters.includes(meter)) {
-      byAsset[asset].meters.push(meter);
-      count += 1;
-    }
-    meterToAsset[meter] = asset;
+    const serial = (cols[assetCol] || "").trim();
+    if (!serial) continue;
+    const lat = latCol !== -1 ? (cols[latCol] || "").trim() : "";
+    const lng = lngCol !== -1 ? (cols[lngCol] || "").trim() : "";
+    byAsset[serial.toUpperCase()] = {
+      serial,
+      description: descCol !== -1 ? (cols[descCol] || "").trim() : "",
+      assetType: typeCol !== -1 ? (cols[typeCol] || "").trim().toUpperCase() : "",
+      gps: lat && lng ? { lat, lng } : null,
+      notes: notesCol !== -1 ? (cols[notesCol] || "").trim() : "",
+      meters: [],
+    };
   }
-  if (!count) return null;
-  return { byAsset, meterToAsset, meterCount: count, assetCount: Object.keys(byAsset).length };
+  const assetCount = Object.keys(byAsset).length;
+  if (!assetCount) return null;
+  return { mode: "assets", byAsset, meterCount: 0, assetCount };
 }
 
-/* Compares what a survey found on an asset against what the register expects. */
+/* Compares what a survey found on an asset against what the register expects.
+   Only meaningful when a meter allocation was imported. */
 function compareToRegister(register, assetSerial, foundMeters) {
-  if (!register || !assetSerial) return null;
+  if (!register || register.mode !== "allocation" || !assetSerial) return null;
   const key = assetSerial.trim().toUpperCase();
   const entry = register.byAsset[key];
   if (!entry) return { unknownAsset: true, expected: [], missing: [], extra: [], matched: [] };
@@ -716,6 +746,22 @@ function compareToRegister(register, assetSerial, foundMeters) {
   const missing = expected.filter((e) => !found.includes(e));
   const extra = found.filter((f) => !expected.includes(f));
   return { unknownAsset: false, expected, matched, missing, extra };
+}
+
+/* Which registered assets have been surveyed and which are still outstanding. */
+function registerProgress(register, captures) {
+  if (!register) return null;
+  const done = new Set(
+    captures.filter((c) => c.type === "amr" && c.amrSerial)
+      .map((c) => c.amrSerial.trim().toUpperCase())
+  );
+  const all = Object.values(register.byAsset);
+  return {
+    total: all.length,
+    done: all.filter((a) => done.has(a.serial.toUpperCase())).length,
+    outstanding: all.filter((a) => !done.has(a.serial.toUpperCase())),
+    isDone: (serial) => done.has(String(serial || "").trim().toUpperCase()),
+  };
 }
 
 /* Finds the previous reading for a capture, by position first then serial. */
@@ -1267,6 +1313,8 @@ function exportExcel(survey, captures, reviewer) {
       "Good Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "GOOD"; }).length,
       "Fair Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "FAIR"; }).length,
       "Weak Signal": (c.amrShots || []).flatMap((s) => s.meters || []).filter((m) => { const b = signalBand(m.signal); return b && b.label === "WEAK"; }).length,
+      "No Meters Allocated": c.noMetersAllocated ? "YES" : "",
+      "No Meters Reason": c.noMetersNote || "",
       "Expected On Register": c.expectedCount ?? "",
       "Found": c.matchedCount ?? "",
       "Missing": (c.missingMeters || []).length || "",
@@ -1274,7 +1322,7 @@ function exportExcel(survey, captures, reviewer) {
       "Not On Register": (c.extraMeters || []).join("; "),
       ...trailing(c),
     }));
-    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
+    widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }, { wch: 30 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 40 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   } else if (task === "assets") {
     sheetName = "Asset Register";
     fileSuffix = "asset_register";
@@ -2125,7 +2173,7 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
       try {
         const reg = parseAmrRegister(String(reader.result));
         if (!reg) {
-          setAmrCsvError("No allocation found. The file needs a parent asset column and a meter serial column.");
+          setAmrCsvError("Couldn't read that file. It needs a column with the MUC or repeater serial number.");
           return;
         }
         setSurvey((s) => ({ ...s, amrRegister: reg }));
@@ -2373,7 +2421,11 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
                 }}>
                 <span style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 600, color: reg ? C.approve : C.charcoal }}>
                   <FileSpreadsheet size={15} color={reg ? C.approve : C.charcoalSoft} />
-                  {reg ? `${reg.assetCount} assets, ${reg.meterCount} meters loaded` : "Import expected meter allocation"}
+                  {reg
+                    ? (reg.mode === "assets"
+                        ? `${reg.assetCount} assets loaded`
+                        : `${reg.assetCount} assets, ${reg.meterCount} meters loaded`)
+                    : "Import asset register or meter allocation"}
                 </span>
                 {reg && <Check size={15} color={C.approve} />}
               </button>
@@ -2383,8 +2435,8 @@ function SetupScreen({ survey, setSurvey, onStart, onResume, resuming, role, tas
             <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.flag, marginTop: 6, marginBottom: 0 }}>{amrCsvError}</p>
           ) : (
             <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginTop: 6, marginBottom: 0 }}>
-              A CSV with one row per meter, and a column for its parent MUC or repeater. The survey will
-              then show which expected meters are missing.
+              Either a list of MUCs and repeaters to survey \u2014 with description and coordinates \u2014 or a
+              meter allocation with one row per meter. Loading a register gives the technician a worklist.
             </p>
           )}
         </div>
@@ -2468,6 +2520,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
   const [pendingBug, setPendingBug] = useState("");
   const [zoomShot, setZoomShot] = useState(null);
   const [pendingTestMethod, setPendingTestMethod] = useState("");
+  const [pendingRegAsset, setPendingRegAsset] = useState(null);
 
   const previousForPosition = position.trim()
     ? lookupPrevious(survey.previousReadings, position, "")
@@ -2739,15 +2792,18 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
             fido: null,
             oldMeter: null,
             newMeter: null,
-            amrAssetType: "MUC",
-            amrSerial: "",
+            amrAssetType: pendingRegAsset?.assetType === "REPEATER" ? "Repeater" : "MUC",
+            amrSerial: pendingRegAsset?.serial || "",
+            registerGps: pendingRegAsset?.gps || null,
+            noMetersAllocated: false,
+            noMetersNote: "",
             amrShots: [],
           };
           return {
             ...base,
             photo,
             gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
-            amrSerial: base.amrSerial || serial,
+            amrSerial: base.amrSerial || pendingRegAsset?.serial || serial,
           };
         });
         if (!serial) {
@@ -3004,6 +3060,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
       ? { ...pending, status: "needs_review" }
       : pending;
     // A confirmed leak, or a session ID that doesn't match, always goes to review
+    if (record.type === "amr" && record.noMetersAllocated) {
+      record = { ...record, status: "needs_review" };
+    }
     if (record.type === "amr" && (record.missingMeters || []).length > 0) {
       record = { ...record, status: "needs_review" };
     }
@@ -3024,6 +3083,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
     setCaptureError("");
     setStage("idle");
     setPendingBug("");
+    setPendingRegAsset(null);
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 2200);
     setTimeout(() => inputRef.current?.focus(), 50);
@@ -3513,6 +3573,84 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                   )}
                 </div>
               ) : task === "amr" ? (
+                <>
+                {(() => {
+                  const prog = registerProgress(survey.amrRegister, captures);
+                  if (!prog) return null;
+                  return (
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "10px 12px", borderRadius: 9,
+                        background: prog.done === prog.total ? C.approveSoft : "#E7F2FE", marginBottom: 8
+                      }}>
+                        <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, fontWeight: 700, color: prog.done === prog.total ? C.approve : C.primaryDeep }}>
+                          {prog.done} of {prog.total} SURVEYED
+                        </span>
+                        <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, fontWeight: 700, color: prog.done === prog.total ? C.approve : C.primaryDeep }}>
+                          {prog.outstanding.length} left
+                        </span>
+                      </div>
+
+                      {prog.outstanding.length > 0 && !pendingRegAsset && (
+                        <>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, fontWeight: 700, color: C.charcoalSoft, marginBottom: 5 }}>
+                            STILL TO SURVEY \u2014 TAP TO SELECT
+                          </div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 210, overflowY: "auto" }}>
+                            {prog.outstanding.map((a) => (
+                              <button key={a.serial}
+                                onClick={() => { setPendingRegAsset(a); setPosition(a.description || a.serial); }}
+                                style={{
+                                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                                  padding: "9px 11px", borderRadius: 8, cursor: "pointer",
+                                  border: `1.5px solid ${C.line}`, background: "#fff", textAlign: "left"
+                                }}>
+                                <div>
+                                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoal }}>
+                                    {a.description || a.serial}
+                                  </div>
+                                  <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: C.charcoalSoft, marginTop: 1 }}>
+                                    {a.serial}{a.assetType ? ` \u00b7 ${a.assetType}` : ""}
+                                  </div>
+                                </div>
+                                <ChevronRight size={14} color={C.charcoalSoft} />
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {pendingRegAsset && (
+                        <div style={{ padding: "11px 13px", borderRadius: 9, background: "#E7F2FE", border: `1.5px solid ${C.primary}` }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                            <div>
+                              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 12.5, fontWeight: 700, color: C.primaryDeep }}>
+                                {pendingRegAsset.description || pendingRegAsset.serial}
+                              </div>
+                              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, color: C.charcoalSoft, marginTop: 2 }}>
+                                {pendingRegAsset.serial}{pendingRegAsset.assetType ? ` \u00b7 ${pendingRegAsset.assetType}` : ""}
+                              </div>
+                              {pendingRegAsset.gps && (
+                                <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4 }}>
+                                  <MapPin size={10} color={C.charcoalSoft} />
+                                  <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9.5, color: C.charcoalSoft }}>
+                                    on record: {pendingRegAsset.gps.lat}, {pendingRegAsset.gps.lng}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                            <button onClick={() => { setPendingRegAsset(null); setPosition(""); }}
+                              style={{ border: "none", background: "none", cursor: "pointer", padding: 2 }}>
+                              <X size={14} color={C.charcoalSoft} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <div
                   onClick={() => openPicker("amrAsset")}
                   style={{
@@ -3536,6 +3674,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                     </>
                   )}
                 </div>
+                </>
               ) : (task === "meterwork" && survey.meterMode === "replace") ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                   <button
@@ -4573,12 +4712,39 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       )}
                     </div>
                     {(pending.amrShots || []).length === 0 ? (
-                      <div style={{
-                        padding: "14px 10px", borderRadius: 10, border: `1.5px dashed ${C.line}`, background: C.paper,
-                        textAlign: "center", fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft
-                      }}>
-                        Add up to 4 screenshots from the handheld reader
-                      </div>
+                      <>
+                        <div style={{
+                          padding: "14px 10px", borderRadius: 10, border: `1.5px dashed ${C.line}`, background: C.paper,
+                          textAlign: "center", fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft
+                        }}>
+                          Add up to 4 screenshots from the handheld reader
+                        </div>
+                        <button
+                          onClick={() => editField("noMetersAllocated", !pending.noMetersAllocated)}
+                          style={{
+                            width: "100%", marginTop: 8, padding: "11px", borderRadius: 9, cursor: "pointer",
+                            border: `1.5px solid ${pending.noMetersAllocated ? C.review : C.line}`,
+                            background: pending.noMetersAllocated ? C.reviewSoft : "#fff",
+                            fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700,
+                            color: pending.noMetersAllocated ? C.review : C.charcoalSoft,
+                            display: "flex", alignItems: "center", justifyContent: "center", gap: 7
+                          }}>
+                          {pending.noMetersAllocated ? <Check size={14} /> : <AlertTriangle size={14} />}
+                          NO METERS ALLOCATED
+                        </button>
+                        {pending.noMetersAllocated && (
+                          <input
+                            value={pending.noMetersNote || ""}
+                            onChange={(e) => editField("noMetersNote", e.target.value)}
+                            placeholder="Why? Faulty, out of range, newly installed\u2026"
+                            style={{
+                              width: "100%", boxSizing: "border-box", marginTop: 7, padding: "9px 11px",
+                              borderRadius: 8, border: `1.5px solid ${C.line}`,
+                              fontFamily: "'Inter',sans-serif", fontSize: 12, color: C.charcoal
+                            }}
+                          />
+                        )}
+                      </>
                     ) : (
                       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
                         {pending.amrShots.map((shot, i) => (
@@ -5240,7 +5406,9 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                       const st = FIDO_OUTCOMES[c.outcome];
                       return <><Radio size={10} color={st ? st.colour : C.charcoalSoft} /> {c.outcome || "no finding"}</>;
                     })()}
-                    {c.type === "amr" && <><Radio size={10} color={C.primary} /> {c.amrAssetType || "AMR"}</>}
+                    {c.type === "amr" && (c.noMetersAllocated
+                      ? <><AlertTriangle size={10} color={C.review} /> No meters</>
+                      : <><Radio size={10} color={C.primary} /> {(c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0)} meters</>)}
                     {c.type === "asset" && <><LayoutGrid size={10} color={CATEGORY_COLOURS[c.assetCategory] || C.primary} /> {c.assetType || "Asset"}</>}
                     {c.type === "consumption" && <><Activity size={10} color={C.primary} /> Profile</>}
                   </span>
@@ -5830,6 +5998,29 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
                 <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, color: C.charcoalSoft, marginBottom: 10 }}>
                   Tap a screenshot to view it full size and check the readings.
                 </div>
+
+                {selected.noMetersAllocated && (
+                  <div style={{
+                    marginBottom: 11, padding: "11px 13px", borderRadius: 9,
+                    background: C.reviewSoft, border: `1px solid ${C.review}55`
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <AlertTriangle size={14} color={C.review} />
+                      <span style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 700, color: C.review }}>
+                        NO METERS ALLOCATED TO THIS {selected.amrAssetType?.toUpperCase() || "ASSET"}
+                      </span>
+                    </div>
+                    {editMode ? (
+                      <input value={selected.noMetersNote || ""} onChange={(e) => updateCapture(selected.id, { noMetersNote: e.target.value })}
+                        placeholder="Reason"
+                        style={{ width: "100%", boxSizing: "border-box", marginTop: 7, padding: "7px 9px", borderRadius: 7, border: `1.5px solid ${C.primary}`, fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal }} />
+                    ) : selected.noMetersNote ? (
+                      <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoal, marginTop: 6 }}>
+                        {selected.noMetersNote}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
 
                 {(selected.missingMeters || []).length > 0 && (
                   <div style={{
