@@ -40,12 +40,29 @@ function getRealGPS(timeoutMs = 8000) {
     let done = false;
     const finish = (val) => { if (!done) { done = true; resolve(val); } };
     navigator.geolocation.getCurrentPosition(
-      (pos) => finish({ lat: pos.coords.latitude.toFixed(6), lng: pos.coords.longitude.toFixed(6) }),
+      (pos) => finish({
+        lat: pos.coords.latitude.toFixed(6),
+        lng: pos.coords.longitude.toFixed(6),
+        accuracy_m: pos.coords.accuracy != null ? Math.round(pos.coords.accuracy * 10) / 10 : null,
+      }),
       () => finish(null),
       { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }
     );
     setTimeout(() => finish(null), timeoutMs + 500);
   });
+}
+
+/* Pick the better of two device fixes.
+   Unknown always loses. Otherwise a meaningfully tighter fix (>2 m better)
+   replaces the earlier one, so a slow-but-accurate lock is not thrown away. */
+function betterFix(current, incoming) {
+  const isReal = (g) => g && g.lat !== "Unknown";
+  if (!isReal(incoming)) return current;
+  if (!isReal(current)) return incoming;
+  const a = current.accuracy_m, b = incoming.accuracy_m;
+  if (a == null && b != null) return incoming;
+  if (a != null && b != null && b < a - 2) return incoming;
+  return current;
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -2788,7 +2805,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
             reading: "",
             serial: "",
             confidence: 0,
-            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            // Device position only. Never fall back to the site GPS from setup —
+            // a plausible wrong coordinate is worse than an honest Unknown.
+            gps: gps || { lat: "Unknown", lng: "Unknown" },
             timestamp: nowStamp(),
             status: "needs_review",
             tech: survey.tech,
@@ -2809,7 +2828,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           return {
             ...base,
             photo,
-            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            gps: betterFix(base.gps, gps),
             amrSerial: base.amrSerial || pendingRegAsset?.serial || serial,
           };
         });
@@ -2908,7 +2927,9 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
             reading: "",
             serial: "",
             confidence: 0,
-            gps: gps || survey.gps || { lat: "Unknown", lng: "Unknown" },
+            // Device position only. Never fall back to the site GPS from setup —
+            // a plausible wrong coordinate is worse than an honest Unknown.
+            gps: gps || { lat: "Unknown", lng: "Unknown" },
             timestamp: nowStamp(),
             status: "needs_review",
             tech: survey.tech,
@@ -2926,7 +2947,7 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
           return {
             ...base,
             photo,
-            gps: base.gps && base.gps.lat !== "Unknown" ? base.gps : (gps || base.gps),
+            gps: betterFix(base.gps, gps),
             amrSerial: base.amrSerial || serial,
           };
         });
@@ -4702,6 +4723,33 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                       />
                     </div>
                   </div>
+
+                  {(() => {
+                    const g = pending.gps;
+                    const known = g && g.lat !== "Unknown";
+                    const acc = known ? g.accuracy_m : null;
+                    const tone = !known ? C.flag : (acc == null ? C.charcoalSoft : (acc <= 10 ? C.approve : (acc <= 25 ? C.review : C.flag)));
+                    const bg = !known ? C.flagSoft : (acc != null && acc <= 10 ? C.approveSoft : (acc != null && acc <= 25 ? C.reviewSoft : "#fff"));
+                    return (
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
+                        padding: "9px 11px", borderRadius: 9,
+                        border: `1.5px solid ${tone}`, background: bg,
+                      }}>
+                        <MapPin size={14} color={tone} style={{ flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11.5, fontWeight: 600, color: C.charcoal }}>
+                            {known ? `${g.lat}, ${g.lng}` : "Position not captured"}
+                          </div>
+                          <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10, color: C.charcoalSoft, marginTop: 1 }}>
+                            {known
+                              ? `This device${acc != null ? ` · ±${acc} m` : ""}${acc != null && acc > 25 ? " · weak, retake nearer the unit" : ""}`
+                              : "Stand at the device and retake the photo"}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{ marginTop: 14 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
