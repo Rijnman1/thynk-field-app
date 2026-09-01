@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import RouteTrace from "./RouteTrace.jsx";
+import RouteReview from "./RouteReview.jsx";
 import {
   Droplet, Camera, MapPin, Check, X, Flag, Edit3, ArrowRight,
   ArrowLeft, ChevronRight, Loader2, CheckCircle2, AlertTriangle,
@@ -548,6 +550,11 @@ const TASKS = {
     label: "AMR Survey",
     blurb: "Map MUCs and repeaters, and record which meters each one can see.",
     icon: Radio,
+  },
+  routetrace: {
+    label: "Route Trace",
+    blurb: "Walk and map buried services — pipes, cables, valves and fittings as positioned routes.",
+    icon: MapPin,
   },
   assets: {
     label: "Asset Mapping",
@@ -6765,10 +6772,16 @@ export default function App() {
       {unlocked && task && screen === "setup" && (
         <SetupScreen survey={survey} setSurvey={setSurvey} onStart={startNewSurvey} onResume={resumeSurvey} resuming={resuming} role={role} task={task} username={username} />
       )}
-      {unlocked && task && screen === "capture" && (
+      {unlocked && task === "routetrace" && screen === "capture" && (
+        <RouteTrace survey={survey} captures={captures} setCaptures={setCaptures} setScreen={setScreen} />
+      )}
+      {unlocked && task && task !== "routetrace" && screen === "capture" && (
         <CaptureScreen survey={survey} captures={captures} setCaptures={setCaptures} setScreen={setScreen} task={task} />
       )}
-      {unlocked && task && screen === "office" && role !== "field" && (
+      {unlocked && task === "routetrace" && screen === "office" && (
+        <RouteReview survey={survey} captures={captures} setCaptures={setCaptures} role={role} />
+      )}
+      {unlocked && task && task !== "routetrace" && screen === "office" && role !== "field" && (
         <OfficeScreen survey={survey} captures={captures} setCaptures={setCaptures} onDeleteSurvey={deleteCurrentSurvey} />
       )}
     </div>
