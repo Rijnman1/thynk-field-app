@@ -2013,6 +2013,40 @@ function printReport(survey, captures, reviewer, counts, pct) {
   const win = window.open("", "_blank", "width=900,height=1000");
   if (!win) return;
   const TYPE_SHORT = { meter: "Meter", sensor: "Sensor", fido: "FIDO", replacement: "Replacement", amr: "AMR", asset: "Asset", consumption: "Profile" };
+  const amrDupes = findDuplicateMeters(captures);
+
+  /* Linked meters render directly beneath their repeater row, so the photo,
+     position and readings stay together however long the report runs. */
+  const meterBlock = (c) => {
+    const meters = (c.amrShots || []).flatMap((s) => s.meters || []);
+    if (!meters.length) return "";
+    return `
+    <tr class="submeters">
+      <td colspan="10">
+        <div class="subwrap">
+          <div class="subhead">${meters.length} meter${meters.length === 1 ? "" : "s"} linked to ${c.amrAssetType || "AMR"}${c.amrSerial ? ` ${c.amrSerial}` : ""}</div>
+          <table class="subtable">
+            <colgroup><col style="width:22%"><col style="width:14%"><col style="width:14%"><col style="width:12%"><col style="width:38%"></colgroup>
+            <thead><tr><th>Meter Serial</th><th>Model</th><th>Signal</th><th>Band</th><th>Note</th></tr></thead>
+            <tbody>
+              ${meters.map((m) => {
+                const b = signalBand(m.signal);
+                const key = (m.serial || "").trim().toUpperCase();
+                const d = amrDupes[key];
+                const dupNote = d
+                  ? (d.best && d.best.captureId === c.id
+                      ? "Strongest — should own this meter"
+                      : `Also on ${d.best ? `${d.best.assetType} ${d.best.position}` : "another asset"} (stronger)`)
+                  : "";
+                return `<tr><td>${m.serial || "—"}</td><td>${m.model || "—"}</td><td>${m.signal || "—"}</td><td class="band ${b ? b.label.toLowerCase() : ""}">${b ? b.label : "—"}</td><td class="dupnote">${dupNote}</td></tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </td>
+    </tr>`;
+  };
+
   const rows = captures.map((c) => {
     if (c.type === "amr") {
       const count = (c.amrShots || []).reduce((n, s) => n + (s.meters || []).length, 0);
@@ -2025,10 +2059,10 @@ function printReport(survey, captures, reviewer, counts, pct) {
       <td>${c.amrSerial || "—"}</td>
       <td>${c.timestamp.date}</td>
       <td>${c.timestamp.time}</td>
-      <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
+      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
       <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
       <td>—</td>
-    </tr>`;
+    </tr>${meterBlock(c)}`;
     }
     if (c.type === "replacement") {
       return `
@@ -2043,7 +2077,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
       <td>OLD: ${c.oldMeter?.serial || "—"}<br/>NEW: ${c.newMeter?.serial || "—"}</td>
       <td>${c.timestamp.date}</td>
       <td>${c.timestamp.time}</td>
-      <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
+      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
       <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
       <td>—</td>
     </tr>`;
@@ -2057,38 +2091,13 @@ function printReport(survey, captures, reviewer, counts, pct) {
       <td>${c.serial || "—"}</td>
       <td>${c.timestamp.date}</td>
       <td>${c.timestamp.time}</td>
-      <td>${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
+      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
       <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
       <td>${c.sensor?.sessionId || "—"}</td>
     </tr>`;
   }).join("");
 
-  const amrDupes = findDuplicateMeters(captures);
-  const amrAssets = captures.filter((c) => c.type === "amr" && (c.amrShots || []).length);
-  const amrAppendix = amrAssets.length ? `
-      <h2 style="font-size:15px; margin:30px 0 6px;">Appendix — AMR Linked Meters</h2>
-      ${amrAssets.map((c) => {
-        const meters = (c.amrShots || []).flatMap((s) => s.meters || []);
-        return `
-        <h3 style="font-size:12.5px; margin:16px 0 4px;">${c.amrAssetType || "AMR"} · ${c.position}${c.amrSerial ? ` · ${c.amrSerial}` : ""} <span style="font-weight:normal;color:#5B6570;">(${meters.length} meters)</span></h3>
-        <table>
-          <thead><tr><th>Meter Serial</th><th>Model</th><th>Signal</th><th>Band</th><th>Note</th></tr></thead>
-          <tbody>
-            ${meters.map((m) => {
-              const b = signalBand(m.signal);
-              const key = (m.serial || "").trim().toUpperCase();
-              const d = amrDupes[key];
-              const dupNote = d
-                ? (d.best && d.best.captureId === c.id
-                    ? "Strongest — should own this meter"
-                    : `Also on ${d.best ? `${d.best.assetType} ${d.best.position}` : "another asset"} (stronger)`)
-                : "";
-              return `<tr><td>${m.serial || "—"}</td><td>${m.model || "—"}</td><td>${m.signal || "—"}</td><td class="band ${b ? b.label.toLowerCase() : ""}">${b ? b.label : "—"}</td><td class="dupnote">${dupNote}</td></tr>`;
-            }).join("")}
-          </tbody>
-        </table>`;
-      }).join("")}
-  ` : "";
+  const amrAppendix = "";
 
   win.document.write(`
     <!doctype html><html><head><title>${survey.surveyName || "Meter Survey"} Report</title>
@@ -2103,9 +2112,19 @@ function printReport(survey, captures, reviewer, counts, pct) {
       .stats { display:flex; gap:24px; margin: 18px 0 22px; padding: 14px 18px; background:#F4F7F9; border-radius:10px; }
       .stat b { display:block; font-size:20px; }
       .stat span { font-size:11px; color:#5B6570; }
-      table { width:100%; border-collapse: collapse; font-size:12px; }
-      th, td { border: 1px solid #DCE3E8; padding: 6px 8px; text-align:left; vertical-align: middle; }
+      table { width:100%; border-collapse: collapse; font-size:12px; table-layout: fixed; }
+      th, td { border: 1px solid #DCE3E8; padding: 6px 8px; text-align:left; vertical-align: middle;
+               word-wrap: break-word; overflow-wrap: anywhere; }
       th { background: #F4F7F9; }
+      td.gpscell { font-family: "Courier New", monospace; font-size: 11px; }
+      /* linked meters sit inside their repeater row */
+      tr.submeters > td { padding: 0; border-top: none; background: #FBFCFD; }
+      .subwrap { padding: 8px 10px 10px 64px; }
+      .subhead { font-size: 10.5px; font-weight: 700; color: #5B6570; margin-bottom: 5px;
+                 text-transform: uppercase; letter-spacing: 0.4px; }
+      .subtable { font-size: 11px; }
+      .subtable th { background: #F0F4F7; font-size: 10px; }
+      .subtable th, .subtable td { padding: 4px 7px; }
       .thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; display:inline-block; margin: 1px; }
       .footer { margin-top: 22px; font-size: 11px; color:#5B6570; }
       .band { font-weight:700; text-align:center; }
@@ -2113,7 +2132,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
       .band.fair { color:#D98A22; }
       .band.weak { color:#D6485A; }
       .dupnote { font-size:10px; color:#D98A22; }
-      @media print { .no-print { display:none; } }
+      @media print { .no-print { display:none; } tr.submeters { page-break-inside: avoid; } thead { display: table-header-group; } }
     </style></head><body>
       <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
       <h1>${survey.siteName || "Untitled Site"} — Meter Capture Report</h1>
@@ -2130,6 +2149,11 @@ function printReport(survey, captures, reviewer, counts, pct) {
         <div class="stat"><b>${pct}%</b><span>COMPLETE</span></div>
       </div>
       <table>
+        <colgroup>
+          <col style="width:7%"><col style="width:19%"><col style="width:8%"><col style="width:10%">
+          <col style="width:11%"><col style="width:8%"><col style="width:6%"><col style="width:14%">
+          <col style="width:9%"><col style="width:8%">
+        </colgroup>
         <thead><tr><th>Photo</th><th>Position</th><th>Type</th><th>Reading</th><th>Serial</th><th>Date</th><th>Time</th><th>GPS</th><th>Status</th><th>Session ID</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -5492,9 +5516,22 @@ function OfficeScreen({ survey, captures, setCaptures, onDeleteSurvey }) {
           }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
               <div>
-                <div style={{ fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, color: C.charcoal }}>
-                  {selected.position}
-                </div>
+                {editMode ? (
+                  <input
+                    value={selected.position || ""}
+                    onChange={(e) => updateCapture(selected.id, { position: e.target.value })}
+                    placeholder="Position / description"
+                    style={{
+                      fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18,
+                      color: C.charcoal, padding: "4px 8px", borderRadius: 8,
+                      border: `1.5px solid ${C.primary}`, width: "100%", boxSizing: "border-box",
+                    }}
+                  />
+                ) : (
+                  <div style={{ fontFamily: "'Space Grotesk',sans-serif", fontWeight: 700, fontSize: 18, color: C.charcoal }}>
+                    {selected.position}
+                  </div>
+                )}
                 <div style={{
                   display: "inline-flex", alignItems: "center", gap: 5, marginTop: 5, padding: "3px 9px",
                   borderRadius: 999, background: STATUS_META[selected.status].bg
