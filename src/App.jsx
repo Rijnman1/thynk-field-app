@@ -65,6 +65,21 @@ function betterFix(current, incoming) {
   return current;
 }
 
+/* Excel: SheetJS (community build) cannot set fonts, so Excel applies the
+   workbook default — Aptos on current Microsoft 365. What we can control is
+   the text itself, so headers and string values are uppercased to match the
+   PDF. Numbers, dates and blanks are left alone. */
+function upperSheet(rows) {
+  return rows.map((r) =>
+    Object.fromEntries(
+      Object.entries(r).map(([k, v]) => [
+        k.toUpperCase(),
+        typeof v === "string" ? v.toUpperCase() : v,
+      ])
+    )
+  );
+}
+
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const nowStamp = () => {
   const d = new Date();
@@ -1475,7 +1490,7 @@ function exportExcel(survey, captures, reviewer) {
     widths = [{ wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 19 }, { wch: 16 }, { wch: 15 }, { wch: 13 }, { wch: 26 }, { wch: 13 }, { wch: 30 }, { wch: 30 }, { wch: 12 }, { wch: 9 }, { wch: 24 }, { wch: 14 }, { wch: 14 }, { wch: 15 }];
   }
 
-  const ws = XLSX.utils.json_to_sheet(rows);
+  const ws = XLSX.utils.json_to_sheet(upperSheet(rows));
   ws["!cols"] = widths;
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
 
@@ -1512,7 +1527,7 @@ function exportExcel(survey, captures, reviewer) {
         };
       });
     if (findingRows.length) {
-      const fWs = XLSX.utils.json_to_sheet(findingRows);
+      const fWs = XLSX.utils.json_to_sheet(upperSheet(findingRows));
       fWs["!cols"] = [
         { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 13 }, { wch: 13 },
         { wch: 15 }, { wch: 20 }, { wch: 21 }, { wch: 14 }, { wch: 13 }, { wch: 13 },
@@ -1560,7 +1575,7 @@ function exportExcel(survey, captures, reviewer) {
       });
     });
     if (amrRows.length) {
-      const amrWs = XLSX.utils.json_to_sheet(amrRows);
+      const amrWs = XLSX.utils.json_to_sheet(upperSheet(amrRows));
       amrWs["!cols"] = [
         { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 16 },
         { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 38 },
@@ -1585,7 +1600,7 @@ function exportExcel(survey, captures, reviewer) {
       });
     });
     if (missingRows.length) {
-      const mWs = XLSX.utils.json_to_sheet(missingRows);
+      const mWs = XLSX.utils.json_to_sheet(upperSheet(missingRows));
       mWs["!cols"] = [{ wch: 18 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 13 }, { wch: 14 }];
       XLSX.utils.book_append_sheet(wb, mWs, "Missing Meters");
     }
@@ -1754,7 +1769,8 @@ function printFidoReport(survey, captures, reviewer) {
     <!doctype html><html><head><title>${survey.siteName || "Estate"} Leak Detection Report</title>
     <style>
       * { box-sizing: border-box; }
-      body { font-family: Arial, Helvetica, sans-serif; color:#2B2F33; padding:28px 32px; margin:0; }
+      body { text-transform: uppercase; font-variant-numeric: tabular-nums;
+             font-family: 'Aptos', 'Segoe UI Variable Text', 'Segoe UI', Calibri, Arial, Helvetica, sans-serif; color:#2B2F33; padding:28px 32px; margin:0; }
       .brand { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
       .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
       .brand span { font-weight:700; font-size:16px; }
@@ -1799,7 +1815,7 @@ function printFidoReport(survey, captures, reviewer) {
       .note { margin:12px 16px 0; padding:10px 13px; background:#F4F7F9; border-radius:7px;
         font-size:11.5px; line-height:1.5; }
       .note b { color:#2B2F33; }
-      .mono { font-family:'Courier New', monospace; }
+      .mono { font-variant-numeric: tabular-nums; letter-spacing: 0.2px; }
       .footer { margin-top:26px; padding-top:12px; border-top:1px solid #DCE3E8;
         font-size:10.5px; color:#5B6570; line-height:1.5; }
       @media print { .no-print { display:none; } .block { page-break-inside:avoid; } }
@@ -1955,7 +1971,8 @@ function printAssetRegister(survey, captures, reviewer) {
     <!doctype html><html><head><title>${survey.siteName || "Estate"} Asset Register</title>
     <style>
       * { box-sizing: border-box; }
-      body { font-family: Arial, Helvetica, sans-serif; color:#2B2F33; padding:32px; margin:0; }
+      body { text-transform: uppercase; font-variant-numeric: tabular-nums;
+             font-family: 'Aptos', 'Segoe UI Variable Text', 'Segoe UI', Calibri, Arial, Helvetica, sans-serif; color:#2B2F33; padding:32px; margin:0; }
       .brand { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
       .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
       .brand span { font-weight:700; font-size:16px; }
@@ -1973,7 +1990,7 @@ function printAssetRegister(survey, captures, reviewer) {
       .cardmeta { width:100%; border-collapse:collapse; font-size:11px; }
       .cardmeta td { padding:2px 0; vertical-align:top; }
       .cardmeta td:first-child { color:#5B6570; width:120px; font-size:9.5px; letter-spacing:0.3px; padding-top:3px; }
-      .mono { font-family:'Courier New', monospace; }
+      .mono { font-variant-numeric: tabular-nums; letter-spacing: 0.2px; }
       .overdue { color:#D6485A; font-weight:700; }
       .servicebox { border:1px solid #DCE3E8; border-left:4px solid #D6485A; border-radius:8px; padding:12px 16px; margin-bottom:14px; }
       .servicehead { font-size:11px; font-weight:700; color:#2B2F33; letter-spacing:0.4px; margin-bottom:8px; }
@@ -2094,7 +2111,8 @@ function printReport(survey, captures, reviewer, counts, pct) {
     <!doctype html><html><head><title>${survey.surveyName || "Meter Survey"} Report</title>
     <style>
       * { box-sizing: border-box; }
-      body { font-family: Arial, Helvetica, sans-serif; color: #2B2F33; padding: 32px; margin:0; }
+      body { text-transform: uppercase; font-variant-numeric: tabular-nums;
+             font-family: 'Aptos', 'Segoe UI Variable Text', 'Segoe UI', Calibri, Arial, Helvetica, sans-serif; color: #2B2F33; padding: 32px; margin:0; }
       .brand { display:flex; align-items:center; gap:8px; margin-bottom: 4px; }
       .brand .box { width:20px; height:20px; border-radius:5px; background:#0D86F3; }
       .brand span { font-weight:700; font-size:16px; }
@@ -2107,10 +2125,10 @@ function printReport(survey, captures, reviewer, counts, pct) {
       /* break between words, never inside them — "Repeater" must not become "Repeate r" */
       th, td { border: 1px solid #DCE3E8; padding: 7px 8px; text-align:left; vertical-align: top;
                word-break: normal; overflow-wrap: break-word; hyphens: none; line-height: 1.5; }
-      th { background: #F4F7F9; vertical-align: middle; font-size: 9.5px; text-transform: uppercase;
+      th { background: #F4F7F9; vertical-align: middle; font-size: 9.5px; font-weight: 700;
            letter-spacing: 0.2px; color: #5B6570; white-space: normal; line-height: 1.3; }
       td.nowrap { white-space: nowrap; }
-      td.gpscell { font-family: "Courier New", monospace; font-size: 10px; white-space: nowrap; }
+      td.gpscell { font-variant-numeric: tabular-nums; font-size: 10px; white-space: nowrap; }
       td.stamp { font-size: 10px; white-space: nowrap; }
       td.pos { overflow-wrap: anywhere; }
       .dim { color: #5B6570; font-size: 10.5px; }
