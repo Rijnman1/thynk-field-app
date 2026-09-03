@@ -2022,7 +2022,7 @@ function printReport(survey, captures, reviewer, counts, pct) {
     if (!meters.length) return "";
     return `
     <tr class="submeters">
-      <td colspan="10">
+      <td colspan="7">
         <div class="subwrap">
           <div class="subhead">${meters.length} meter${meters.length === 1 ? "" : "s"} linked to ${c.amrAssetType || "AMR"}${c.amrSerial ? ` ${c.amrSerial}` : ""}</div>
           <table class="subtable">
@@ -2053,47 +2053,38 @@ function printReport(survey, captures, reviewer, counts, pct) {
       return `
     <tr>
       <td>${c.photo ? `<img src="${c.photo}" class="thumb" />` : "—"}</td>
-      <td>${c.position}</td>
-      <td>${c.amrAssetType || "AMR"}</td>
-      <td>${count} meters linked</td>
-      <td>${c.amrSerial || "—"}</td>
-      <td>${c.timestamp.date}</td>
-      <td>${c.timestamp.time}</td>
-      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
-      <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
-      <td>—</td>
+      <td class="pos">${c.position}</td>
+      <td><b>${c.amrAssetType || "AMR"}</b><br/><span class="dim">${count} meters linked</span></td>
+      <td class="nowrap">${c.amrSerial || "—"}</td>
+      <td class="stamp">${c.timestamp.date}<br/><span class="dim">${c.timestamp.time}</span></td>
+      <td class="gpscell">${c.gps && c.gps.lat !== "Unknown" ? `${c.gps.lat}<br/>${c.gps.lng}` : "—"}</td>
+      <td class="nowrap">${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
     </tr>${meterBlock(c)}`;
     }
     if (c.type === "replacement") {
       return `
     <tr>
       <td>
-        ${c.oldMeter?.photo ? `<img src="${c.oldMeter.photo}" class="thumb" title="Old" />` : "—"}
-        ${c.newMeter?.photo ? `<img src="${c.newMeter.photo}" class="thumb" title="New" />` : ""}
+        ${c.oldMeter?.photo ? `<img src="${c.oldMeter.photo}" class="thumb pair" title="Old" />` : "—"}
+        ${c.newMeter?.photo ? `<img src="${c.newMeter.photo}" class="thumb pair" title="New" />` : ""}
       </td>
-      <td>${c.position}</td>
-      <td>Replacement</td>
-      <td>OLD: ${c.oldMeter?.reading ? `${c.oldMeter.reading} m³` : "—"}<br/>NEW: ${c.newMeter?.reading ? `${c.newMeter.reading} m³` : "—"}</td>
-      <td>OLD: ${c.oldMeter?.serial || "—"}<br/>NEW: ${c.newMeter?.serial || "—"}</td>
-      <td>${c.timestamp.date}</td>
-      <td>${c.timestamp.time}</td>
-      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
-      <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
-      <td>—</td>
+      <td class="pos">${c.position}</td>
+      <td><b>Replacement</b><br/><span class="dim">OLD ${c.oldMeter?.reading ? `${c.oldMeter.reading} m³` : "—"} · NEW ${c.newMeter?.reading ? `${c.newMeter.reading} m³` : "—"}</span></td>
+      <td>OLD ${c.oldMeter?.serial || "—"}<br/>NEW ${c.newMeter?.serial || "—"}</td>
+      <td class="stamp">${c.timestamp.date}<br/><span class="dim">${c.timestamp.time}</span></td>
+      <td class="gpscell">${c.gps && c.gps.lat !== "Unknown" ? `${c.gps.lat}<br/>${c.gps.lng}` : "—"}</td>
+      <td class="nowrap">${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
     </tr>`;
     }
     return `
     <tr>
       <td>${(c.photo || c.fido?.photo || c.consumption?.photo) ? `<img src="${c.photo || c.fido?.photo || c.consumption?.photo}" class="thumb" />` : "—"}</td>
-      <td>${c.position}</td>
-      <td>${c.type === "fido" && c.fido?.sessionType ? c.fido.sessionType : (TYPE_SHORT[c.type] || "Meter")}</td>
-      <td>${c.reading ? `${c.reading} m³` : "—"}</td>
-      <td>${c.serial || "—"}</td>
-      <td>${c.timestamp.date}</td>
-      <td>${c.timestamp.time}</td>
-      <td class="gpscell">${c.gps ? `${c.gps.lat}, ${c.gps.lng}` : "—"}</td>
-      <td>${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
-      <td>${c.sensor?.sessionId || "—"}</td>
+      <td class="pos">${c.position}</td>
+      <td><b>${c.type === "fido" && c.fido?.sessionType ? c.fido.sessionType : (TYPE_SHORT[c.type] || "Meter")}</b>${c.reading ? `<br/><span class="dim">${c.reading} m³</span>` : ""}${c.sensor?.sessionId ? `<br/><span class="dim">${c.sensor.sessionId}</span>` : ""}</td>
+      <td class="nowrap">${c.serial || "—"}</td>
+      <td class="stamp">${c.timestamp.date}<br/><span class="dim">${c.timestamp.time}</span></td>
+      <td class="gpscell">${c.gps && c.gps.lat !== "Unknown" ? `${c.gps.lat}<br/>${c.gps.lng}` : "—"}</td>
+      <td class="nowrap">${STATUS_EXPORT_LABEL[c.status] || c.status}</td>
     </tr>`;
   }).join("");
 
@@ -2112,27 +2103,36 @@ function printReport(survey, captures, reviewer, counts, pct) {
       .stats { display:flex; gap:24px; margin: 18px 0 22px; padding: 14px 18px; background:#F4F7F9; border-radius:10px; }
       .stat b { display:block; font-size:20px; }
       .stat span { font-size:11px; color:#5B6570; }
-      table { width:100%; border-collapse: collapse; font-size:12px; table-layout: fixed; }
-      th, td { border: 1px solid #DCE3E8; padding: 6px 8px; text-align:left; vertical-align: middle;
-               word-wrap: break-word; overflow-wrap: anywhere; }
-      th { background: #F4F7F9; }
-      td.gpscell { font-family: "Courier New", monospace; font-size: 11px; }
+      table { width:100%; border-collapse: collapse; font-size:11px; table-layout: fixed; }
+      /* break between words, never inside them — "Repeater" must not become "Repeate r" */
+      th, td { border: 1px solid #DCE3E8; padding: 7px 8px; text-align:left; vertical-align: top;
+               word-break: normal; overflow-wrap: break-word; hyphens: none; line-height: 1.5; }
+      th { background: #F4F7F9; vertical-align: middle; font-size: 9.5px; text-transform: uppercase;
+           letter-spacing: 0.2px; color: #5B6570; white-space: normal; line-height: 1.3; }
+      td.nowrap { white-space: nowrap; }
+      td.gpscell { font-family: "Courier New", monospace; font-size: 10px; white-space: nowrap; }
+      td.stamp { font-size: 10px; white-space: nowrap; }
+      td.pos { overflow-wrap: anywhere; }
+      .dim { color: #5B6570; font-size: 10.5px; }
       /* linked meters sit inside their repeater row */
       tr.submeters > td { padding: 0; border-top: none; background: #FBFCFD; }
-      .subwrap { padding: 8px 10px 10px 64px; }
+      .subwrap { padding: 8px 10px 12px 20px; }
       .subhead { font-size: 10.5px; font-weight: 700; color: #5B6570; margin-bottom: 5px;
                  text-transform: uppercase; letter-spacing: 0.4px; }
       .subtable { font-size: 11px; }
       .subtable th { background: #F0F4F7; font-size: 10px; }
       .subtable th, .subtable td { padding: 4px 7px; }
-      .thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; display:inline-block; margin: 1px; }
+      .thumb { width: 100%; max-width: 132px; height: 96px; object-fit: cover; border-radius: 5px;
+               display:block; margin: 1px 0; border: 1px solid #E8EDF1; }
+      .thumb.pair { height: 64px; }
+      td:first-child { padding: 6px; }
       .footer { margin-top: 22px; font-size: 11px; color:#5B6570; }
       .band { font-weight:700; text-align:center; }
       .band.good { color:#1B9C6E; }
       .band.fair { color:#D98A22; }
       .band.weak { color:#D6485A; }
       .dupnote { font-size:10px; color:#D98A22; }
-      @media print { .no-print { display:none; } tr.submeters { page-break-inside: avoid; } thead { display: table-header-group; } }
+      @media print { .no-print { display:none; } tr { page-break-inside: avoid; } thead { display: table-header-group; } }
     </style></head><body>
       <div class="brand"><div class="box"></div><span>THYNK-H2O</span></div>
       <h1>${survey.siteName || "Untitled Site"} — Meter Capture Report</h1>
@@ -2150,11 +2150,11 @@ function printReport(survey, captures, reviewer, counts, pct) {
       </div>
       <table>
         <colgroup>
-          <col style="width:7%"><col style="width:19%"><col style="width:8%"><col style="width:10%">
-          <col style="width:11%"><col style="width:8%"><col style="width:6%"><col style="width:14%">
-          <col style="width:9%"><col style="width:8%">
+          <col style="width:15%"><col style="width:21%"><col style="width:16%">
+          <col style="width:12%"><col style="width:10%"><col style="width:14%">
+          <col style="width:12%">
         </colgroup>
-        <thead><tr><th>Photo</th><th>Position</th><th>Type</th><th>Reading</th><th>Serial</th><th>Date</th><th>Time</th><th>GPS</th><th>Status</th><th>Session ID</th></tr></thead>
+        <thead><tr><th>Photo</th><th>Position</th><th>Detail</th><th>Serial</th><th>Date</th><th>GPS</th><th>Status</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       ${amrAppendix}
