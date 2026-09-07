@@ -3282,27 +3282,36 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
               </div>
             </div>
           )}
-          {stage !== "result" && (
+          {stage !== "result" && (() => {
+            /* Retrieval and the status board already know where the sensor is —
+               it was recorded at deployment. Asking for it again is re-typing
+               data we hold, so the field is hidden for those two views. */
+            const knowsPosition = task === "fido2" && (fidoMode === "retrieve" || fidoMode === "board");
+            return (
             <>
-              <label style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoalSoft, display: "block", marginBottom: 6 }}>
-                Position / Unit Number
-              </label>
-              <input
-                ref={inputRef}
-                autoFocus
-                value={position}
-                onChange={(e) => setPosition(e.target.value)}
-                placeholder="e.g. 14B"
-                style={{
-                  width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 9,
-                  border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 15,
-                  color: C.charcoal, outline: "none", marginBottom: 14
-                }}
-              />
+              {!knowsPosition && (
+                <>
+                  <label style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoalSoft, display: "block", marginBottom: 6 }}>
+                    Position / Unit Number
+                  </label>
+                  <input
+                    ref={inputRef}
+                    autoFocus
+                    value={position}
+                    onChange={(e) => setPosition(e.target.value)}
+                    placeholder="e.g. 14B"
+                    style={{
+                      width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 9,
+                      border: `1.5px solid ${C.line}`, fontFamily: "'IBM Plex Mono',monospace", fontSize: 15,
+                      color: C.charcoal, outline: "none", marginBottom: 14
+                    }}
+                  />
 
-              <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoalSoft, marginBottom: 8 }}>
-                What are you capturing at this point?
-              </div>
+                  <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, fontWeight: 600, color: C.charcoalSoft, marginBottom: 8 }}>
+                    What are you capturing at this point?
+                  </div>
+                </>
+              )}
 
               {task === "fido2" ? (() => {
                 const bugStatus = buildBugStatus(captures);
@@ -3553,8 +3562,11 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
 
                     {fidoMode === "retrieve" && (
                       <>
-                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 6 }}>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 10.5, fontWeight: 700, color: C.charcoalSoft, marginBottom: 4 }}>
                           WHICH SENSOR ARE YOU COLLECTING?
+                        </div>
+                        <div style={{ fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft, lineHeight: 1.5, marginBottom: 10 }}>
+                          Position, mounting and pipe details carry over from the deployment. Pick the sensor, then attach its session graph.
                         </div>
                         {deployed.length === 0 ? (
                           <p style={{ fontFamily: "'Inter',sans-serif", fontSize: 11.5, color: C.charcoalSoft, textAlign: "center", padding: "20px 0" }}>
@@ -3859,7 +3871,8 @@ function CaptureScreen({ survey, captures, setCaptures, setScreen, task }) {
                 </button>
               )}
             </>
-          )}
+          );
+          })()}
 
           {stage === "result" && pending && (
             <>
