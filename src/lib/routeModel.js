@@ -567,6 +567,9 @@ export function validateSegment(segment) {
     }
   }
 
+  if (buriedRun && (segment.depth_m === 0 || segment.depth_min_m === 0)) {
+    warnings.push('A depth of 0 m was recorded at an access point. Zero cover on a buried service is unlikely — check the entry.');
+  }
   if (buriedRun && segment.depth_m == null) {
     warnings.push('No depth recorded — segment will show as low confidence.');
   }
@@ -598,8 +601,11 @@ export function confirmRoute(route, nodes, segments, verified_by) {
   const now = new Date().toISOString();
   const events = [];
 
-  const confirm = (rec, kind) => {
+  /* Verification confirms the record. Billing is a separate question:
+     fittings are geometry and raise no event, but they are still verified. */
+  const confirm = (rec, kind, billable = true) => {
     if (rec.lifecycle_state === LIFECYCLE_STATE.CONFIRMED) return rec; // idempotent
+    if (!billable) return { ...rec, lifecycle_state: LIFECYCLE_STATE.CONFIRMED };
     events.push({
       event_type: BILLABLE_EVENT.REGISTRATION,
       subject_kind: kind,
@@ -614,7 +620,7 @@ export function confirmRoute(route, nodes, segments, verified_by) {
     return { ...rec, lifecycle_state: LIFECYCLE_STATE.CONFIRMED };
   };
 
-  const nextNodes = nodes.map(n => (n.is_registry_asset ? confirm(n, 'NODE') : n));
+  const nextNodes = nodes.map(n => confirm(n, 'NODE', n.is_registry_asset));
   const nextSegments = segments.map(s => confirm(s, 'SEGMENT'));
   const nextRoute = {
     ...route,
@@ -637,12 +643,15 @@ export function toGeoJSON(route, nodes, segments) {
   const features = [];
 
   for (const s of segments) {
+    // A LineString needs two points. A one-vertex segment is invalid GeoJSON
+    // and will make strict readers reject the whole file, so it exports as a point.
+    const coords = s.vertices.map(v => [v.lon, v.lat]);
+    const geometry = coords.length >= 2
+      ? { type: 'LineString', coordinates: coords }
+      : { type: 'Point', coordinates: coords[0] || [0, 0] };
     features.push({
       type: 'Feature',
-      geometry: {
-        type: 'LineString',
-        coordinates: s.vertices.map(v => [v.lon, v.lat]),
-      },
+      geometry,
       properties: {
         kind: 'SEGMENT',
         segment_id: s.segment_id,
