@@ -163,16 +163,42 @@ export function accuracyState(accuracy_m) {
  * 10 m is the launch setting. Tune per site if needed; corners and features
  * are captured by manual drops and nodes, not by the auto interval.
  */
-export const CAPTURE_CONFIG = {
-  vertex_interval_m: 10,
-  min_vertex_interval_m: 2,   // manual drops closer than this are ignored as noise
-  photo_per_vertex: false,    // photos are on request only
+export const CAPTURE_MODE = {
+  MANUAL: 'MANUAL', // operator drops each point — he can see the fix is good
+  AUTO: 'AUTO',     // drops on distance, filtered by accuracy
 };
+
+export const CAPTURE_CONFIG = {
+  mode: CAPTURE_MODE.MANUAL,  // default: the operator decides
+  vertex_interval_m: 10,      // AUTO mode only
+  min_vertex_interval_m: 2,   // drops closer than this are ignored as noise
+  photo_per_vertex: false,    // photos are on request only
+  // A vertex worse than this is a wayward fix, not a position. In AUTO mode it
+  // is silently skipped; in MANUAL mode the operator is warned but never blocked.
+  vertex_accuracy_limit_m: 1.0,
+};
+
+/** True when a fix is good enough to put a point on the line unattended. */
+export function vertexAccuracyOk(accuracy_m, limit = CAPTURE_CONFIG.vertex_accuracy_limit_m) {
+  return accuracy_m != null && accuracy_m <= limit;
+}
 
 /** True when the walker has moved far enough to warrant a new auto vertex. */
 export function shouldDropVertex(lastVertex, current, interval_m = CAPTURE_CONFIG.vertex_interval_m) {
   if (!lastVertex) return true;
   return haversine(lastVertex, current) >= interval_m;
+}
+
+/**
+ * A step far larger than the drop interval did not happen on foot — it is the
+ * receiver jumping. Used to flag suspect geometry after the fact.
+ */
+export function spikeCount(vertices = [], interval_m = CAPTURE_CONFIG.vertex_interval_m) {
+  let n = 0;
+  for (let i = 1; i < vertices.length; i++) {
+    if (haversine(vertices[i - 1], vertices[i]) > interval_m * 1.5) n++;
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +601,10 @@ export function validateSegment(segment) {
   }
   if (segment.material === MATERIAL.UNKNOWN) warnings.push('Material not identified.');
   if (segment.diameter_mm == null) warnings.push('Diameter not recorded.');
+  const spikes = spikeCount(segment.vertices);
+  if (spikes > 0) {
+    warnings.push(`${spikes} large jump${spikes === 1 ? '' : 's'} between points — likely a wayward fix, not the route. Check the line on the map.`);
+  }
   if (accuracyState(segment.worst_accuracy_m) === 'RED') {
     warnings.push('GPS accuracy poor on this run — saved, but flagged low confidence.');
   }
