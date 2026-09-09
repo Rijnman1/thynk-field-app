@@ -9,7 +9,7 @@ import {
   UTILITY_CLASS, MATERIAL, NODE_TYPE, REGISTRY_NODE_TYPES,
   DEPTH_METHOD, SELECTABLE_DEPTH_METHODS, CAPTURE_TYPE,
   INSTALLATION, DEPTH_APPLIES, prettyInstall,
-  CAPTURE_CONFIG, ACCURACY_GATE_M,
+  CAPTURE_CONFIG, ACCURACY_GATE_M, CAPTURE_MODE, vertexAccuracyOk,
 } from "./lib/routeModel.js";
 
 /* ---------- design tokens (mirrors App.jsx) ---------- */
@@ -98,11 +98,14 @@ export default function RouteTrace({ survey, captures, setCaptures, setScreen })
   const [fix, setFix] = useState(null);        // {lat, lon, accuracy_m}
   const [gpsError, setGpsError] = useState(null);
   const [tracking, setTracking] = useState(false);
+  const [mode, setMode] = useState(CAPTURE_CONFIG.mode);
 
   // the segment currently being walked
   const [pending, setPending] = useState(null); // {startNode, vertices[]}
   const pendingRef = useRef(null);
   useEffect(() => { pendingRef.current = pending; }, [pending]);
+  const modeRef = useRef(mode);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
 
   const watchRef = useRef(null);
 
@@ -121,8 +124,10 @@ export default function RouteTrace({ survey, captures, setCaptures, setScreen })
         setFix(v);
         setGpsError(null);
 
+        // AUTO mode only. A fix worse than the limit is a wayward reading, not a
+        // position on the pipe — it is skipped rather than drawn into the line.
         const p = pendingRef.current;
-        if (p) {
+        if (p && modeRef.current === CAPTURE_MODE.AUTO && vertexAccuracyOk(v.accuracy_m)) {
           const last = p.vertices[p.vertices.length - 1];
           if (shouldDropVertex(last, v)) {
             setPending((cur) => cur
@@ -151,6 +156,7 @@ export default function RouteTrace({ survey, captures, setCaptures, setScreen })
       capture_type: meta.capture_type,
       captured_by: survey?.username || "field",
     }));
+    setMode(meta.mode);
     setTracking(true);
     setStage("walking");
   }
@@ -242,6 +248,7 @@ export default function RouteTrace({ survey, captures, setCaptures, setScreen })
       {stage === "walking" && route && (
         <WalkingCard
           route={route}
+          mode={mode}
           fix={fix}
           pending={pending}
           nodes={nodes}
@@ -314,6 +321,7 @@ function SetupCard({ onBegin }) {
   const [name, setName] = useState("");
   const [uc, setUc] = useState(UTILITY_CLASS.WATER);
   const [ct, setCt] = useState(CAPTURE_TYPE.EXISTING);
+  const [md, setMd] = useState(CAPTURE_CONFIG.mode);
 
   return (
     <div style={card}>
@@ -365,10 +373,34 @@ function SetupCard({ onBegin }) {
           : "Depth is only known where you can reach the pipe. Record it at each valve or chamber; the runs between are interpolated."}
       </div>
 
+      <label style={label}>HOW ARE POINTS RECORDED?</label>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        <button
+          style={{ ...chip(md === CAPTURE_MODE.MANUAL, C.primary), flex: 1 }}
+          onClick={() => setMd(CAPTURE_MODE.MANUAL)}
+        >
+          I drop each point
+        </button>
+        <button
+          style={{ ...chip(md === CAPTURE_MODE.AUTO, C.charcoalSoft), flex: 1 }}
+          onClick={() => setMd(CAPTURE_MODE.AUTO)}
+        >
+          Every {CAPTURE_CONFIG.vertex_interval_m} m
+        </button>
+      </div>
+      <div style={{
+        fontFamily: "'Inter',sans-serif", fontSize: 11, color: C.charcoalSoft,
+        lineHeight: 1.5, marginBottom: 16,
+      }}>
+        {md === CAPTURE_MODE.MANUAL
+          ? "You decide when the fix is good and where the line runs. Slower, but no stray satellite reading ends up drawn as pipe."
+          : `Points drop as you walk, and any fix worse than ${CAPTURE_CONFIG.vertex_accuracy_limit_m} m is skipped. Faster on long straight runs.`}
+      </div>
+
       <button
         style={{ ...btn(name.trim() ? C.primary : C.line, name.trim() ? "#fff" : C.charcoalSoft), width: "100%" }}
         disabled={!name.trim()}
-        onClick={() => onBegin({ name: name.trim(), utility_class: uc, capture_type: ct })}
+        onClick={() => onBegin({ name: name.trim(), utility_class: uc, capture_type: ct, mode: md })}
       >
         <Play size={14} /> Start walking
       </button>
@@ -378,7 +410,7 @@ function SetupCard({ onBegin }) {
 
 /* ---------- 2. walking ---------- */
 
-function WalkingCard({ route, fix, pending, nodes, segments, runningLength, onDrop, onNode, onFinish }) {
+function WalkingCard({ route, mode, fix, pending, nodes, segments, runningLength, onDrop, onNode, onFinish }) {
   const vcount = pending ? pending.vertices.length : 0;
   return (
     <>
@@ -418,17 +450,40 @@ function WalkingCard({ route, fix, pending, nodes, segments, runningLength, onDr
             lineHeight: 1.5, marginBottom: 12,
           }}>
             Walking from <strong style={{ color: C.charcoal }}>{pretty(pending.startNode.node_type)}</strong>.
-            A point drops automatically every {CAPTURE_CONFIG.vertex_interval_m} m — add one by hand at corners.
+            {mode === CAPTURE_MODE.MANUAL
+              ? " Drop a point whenever you are standing on the line and the fix is good."
+              : ` A point drops automatically every ${CAPTURE_CONFIG.vertex_interval_m} m when the fix is good enough.`}
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8 }}>
-          {pending && (
-            <button style={{ ...btn(C.paperDeep, C.charcoal), flex: 1 }} onClick={onDrop} disabled={!fix}>
-              <Plus size={14} /> Drop point
+        {pending && (() => {
+          const ok = fix ? vertexAccuracyOk(fix.accuracy_m) : false;
+          const tint = ok ? C.approve : C.review;
+          return (
+            <button
+              style={{
+                ...btn(ok ? C.approve : C.reviewSoft, ok ? "#fff" : C.charcoal),
+                width: "100%", marginBottom: 8, padding: "16px",
+                border: ok ? "none" : `1.5px solid ${tint}`,
+                flexDirection: "column", gap: 3,
+              }}
+              onClick={onDrop}
+              disabled={!fix}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 15 }}>
+                <Plus size={17} /> Drop point
+              </span>
+              <span style={{ fontSize: 10.5, fontWeight: 500, opacity: 0.95 }}>
+                {fix
+                  ? (ok ? `fix good · ±${fix.accuracy_m.toFixed(2)} m` : `fix weak · ±${fix.accuracy_m.toFixed(2)} m — wait for it to settle`)
+                  : "waiting for a fix"}
+              </span>
             </button>
-          )}
-          <button style={{ ...btn(C.primary), flex: 1.4 }} onClick={onNode} disabled={!fix}>
+          );
+        })()}
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={{ ...btn(pending ? C.paperDeep : C.primary, pending ? C.charcoal : "#fff"), flex: 1 }} onClick={onNode} disabled={!fix}>
             <MapPin size={14} /> {pending ? "Place node" : "Start node"}
           </button>
         </div>
